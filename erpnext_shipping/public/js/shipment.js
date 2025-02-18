@@ -579,7 +579,7 @@ async function select_from_available_services(frm, available_services) {
 				}
 			},
 		});
-		dialog.hide();
+		select_dialog.hide();
 
 	};
 	select_dialog.show();

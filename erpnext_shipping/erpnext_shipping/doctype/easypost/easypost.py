@@ -28,7 +28,7 @@ class EasyPostUtils():
 		self.api_key = settings.get_password("test_key")
 		self.enabled = settings.enabled
 		self.label_format = settings.label_format
-		self.currency = frappe.db.get_single_value("Shipping Settings", "rate_currency")
+		self.currency = frappe.db.get_single_value("Shipping Settings", "rates_currency")
 
 		if not self.enabled: # show dialog to prompt user to enable the service provicer
 			link = get_link_to_form("EasyPost", "EasyPost", _("EasyPost Settings"))
