@@ -11,11 +11,8 @@
   "test_key",
   "production_key",
   "section_break_shuo",
-  "html_duxx",
-  "label_format",
-  "column_break_lzlm",
-  "label_size",
-  "label_paper_size"
+  "printer_type",
+  "label_format"
  ],
  "fields": [
   {
@@ -47,24 +44,7 @@
    "fieldname": "label_format",
    "fieldtype": "Select",
    "label": "Label Format",
-   "options": "png\npdf\nzpl\nepl2"
-  },
-  {
-   "default": "4X6",
-   "fieldname": "label_size",
-   "fieldtype": "Select",
-   "in_list_view": 1,
-   "label": "Label Size",
-   "options": "4X6\n4X8\n4X4"
-  },
-  {
-   "default": "4X6",
-   "depends_on": "eval: doc.label_format === \"pdf\"",
-   "description": "<strong>Warning:</strong> Choosing 8 1/2\" x 11\" paper size will limit the file type to PDF only. Further conversions (zpl, png, epl2) will not be possible.",
-   "fieldname": "label_paper_size",
-   "fieldtype": "Select",
-   "label": "Label Paper Size",
-   "options": "4X6\n8.5X11"
+   "options": "png\nzpl\nepl2\npdf"
   },
   {
    "fieldname": "section_break_shuo",
@@ -77,19 +57,17 @@
    "label": "General Settings"
   },
   {
-   "fieldname": "column_break_lzlm",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "html_duxx",
-   "fieldtype": "HTML",
-   "options": "<b>Note</b>: Changes made will only take effect on new shipments. Existing shipments will not be affected."
+   "description": "Choose which printer type will be used in printing labels: document printer (e.g. laser, inkjet) or label printer (e.g. Eltron, Zebra)",
+   "fieldname": "printer_type",
+   "fieldtype": "Select",
+   "label": "Printer Type",
+   "options": "Document Printer\nLabel Printer"
   }
  ],
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-01-10 06:45:57.187516",
+ "modified": "2025-01-30 09:35:34.852542",
  "modified_by": "Administrator",
  "module": "ERPNext Shipping",
  "name": "EasyPost",

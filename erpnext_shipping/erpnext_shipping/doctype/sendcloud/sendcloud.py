@@ -253,6 +253,7 @@ class SendCloudUtils:
 			"external_reference": f"{shipment}-{index}",
 			"weight": flt(parcel.get("weight"), WEIGHT_DECIMALS),
 			"parcel_items": self.get_parcel_items(parcel, description_of_content, value_of_goods),
+			"to_state": delivery_address.state
 		}
 
 

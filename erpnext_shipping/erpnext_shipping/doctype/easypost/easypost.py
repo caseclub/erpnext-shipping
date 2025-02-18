@@ -28,7 +28,7 @@ class EasyPostUtils():
 		self.api_key = settings.get_password("test_key")
 		self.enabled = settings.enabled
 		self.label_format = settings.label_format
-		self.label_size = settings.label_size
+		self.currency = frappe.db.get_single_value("Shipping Settings", "rate_currency")
 
 		if not self.enabled: # show dialog to prompt user to enable the service provicer
 			link = get_link_to_form("EasyPost", "EasyPost", _("EasyPost Settings"))
@@ -56,15 +56,6 @@ class EasyPostUtils():
 			}
 		)
 
-		# set label_size in options
-		options = {
-			'label_size': self.label_size
-		}
-
-		# add label_format pdf if settings is 4x6 pdf
-		if self.label_size == "4X6" and self.label_format == "pdf":
-			options['label_format'] = "pdf"
-
 		# create a shipment object
 		shipment = {
 			'to_address': {
@@ -88,7 +79,9 @@ class EasyPostUtils():
 				'phone': pickup_contact.phone
 			},
 			'parcel': parcel,
-			'options': options
+			'options': {
+				'currency': self.currency
+			}
 		}
 
 		if delivery_contact.email_id is not None:
@@ -160,45 +153,18 @@ class EasyPostUtils():
 
 		# request for label first
 		try:
-			shipment_label_response = requests.get('https://api.easypost.com/v2/shipments/{id}/label'.format(id=shipment_id), auth=(self.api_key, ""))
+			shipment_label_response = requests.get('https://api.easypost.com/v2/shipments/{id}/label?file_format={format}'.format(id=shipment_id, format=self.label_format), auth=(self.api_key, ""))
 			shipment_label = shipment_label_response.json()
-			label_url = shipment_label['postage_label']['label_url']
+			label_url = shipment_label['postage_label']['label_{format}url'.format(format=key_format)]
 
 			if label_url:
-				# if label was originally made as 4x6 pdf, just return the label_url value
-				if label_url.endswith("pdf"):
-					return label_url
-				
-				# if not, proceed with the conversion
-				else:
-					try:
-						shipment_label_response = requests.get('https://api.easypost.com/v2/shipments/{id}/label?file_format={format}'.format(id=shipment_id, format=self.label_format), auth=(self.api_key, ""))
-						shipment_label = shipment_label_response.json()
-						label_url = shipment_label['postage_label']['label_{format}url'.format(format=key_format)]
-
-						return label_url
-
-					except Exception:
-						show_error_alert("printing EasyPost Label")
+				return label_url
 
 			else:
 				message = _("Please make sure Shipment (ID: {0}), exists and is a complete Shipment on EasyPost.").format(shipment_id)
 				frappe.msgprint(msg=_(message), title=_("Label Not Found"))
 		except Exception:
 			show_error_alert("printing EasyPost Label")
-
-		# try:
-		# 	shipment_label_response = requests.get('https://api.easypost.com/v2/shipments/{id}/label?file_format={format}'.format(id=shipment_id, format=self.label_format), auth=(self.api_key, ""))
-		# 	shipment_label = shipment_label_response.json()
-		# 	label_url = shipment_label['postage_label']['label_{format}url'.format(format=key_format)]
-
-		# 	if label_url:
-		# 		return label_url
-		# 	else:
-		# 		message = _("Please make sure Shipment (ID: {0}), exists and is a complete Shipment on EasyPost.").format(shipment_id)
-		# 		frappe.msgprint(msg=_(message), title=_("Label Not Found"))
-		# except Exception:
-		# 	show_error_alert("printing EasyPost Label")
 
 	def convert_parcel_measurements(self, parcel):
 		parcel_in_english = {}
@@ -245,38 +211,6 @@ class EasyPostUtils():
 			return "EasyPost" if post_or_get=="get" else "easypost"
 		else:
 			return carrier_name.upper() if post_or_get=="get" else carrier_name.lower()
-	
-	def verify_address(self, address):
-		# get the address values
-		address= {
-			'street1': address.address_line1,
-			'street2': address.address_line2,
-			'city': address.city,
-			'state': address.state,
-			'zip': address.pincode,
-			'country': 'US'
-		}
-
-		# create an address object and then verify
-		try:
-			response = requests.post(
-				"https://api.easypost.com/v2/addresses/create_and_verify",
-				json={
-				"address": address,
-				},
-				auth=(self.api_key, "")
-			)
-			response_dict = response.json()
-
-			if response_dict["success"]:
-				return True
-			else:
-				message = ''
-				for error in response_dict["errors"]:
-					message =+ error + '\n'
-				frappe.throw(message, title=_("Error Verifying Address"))
-		except Exception:
-			show_error_alert("verifying EasyPost Address")
 	
 	def test(self):
 		frappe.msg("gello")

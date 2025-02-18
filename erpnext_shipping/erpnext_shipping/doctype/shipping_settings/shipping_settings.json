@@ -5,10 +5,19 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "shipment_doc_settings_section",
+  "rates_currency",
+  "flag_multiple_parcels",
+  "address_settings_section",
+  "verify_address",
+  "address_verification_tool",
   "label_and_print_settings_section",
   "default_network_printer",
+  "label_retention",
   "column_break_bfdc",
+  "auto_print_label",
   "shipping_and_handling_settings_section",
+  "add_shipping_amount",
   "shipment_cost_target",
   "column_break_ttll",
   "item_code",
@@ -17,19 +26,19 @@
  ],
  "fields": [
   {
-   "default": "Items List",
+   "depends_on": "eval: doc.add_shipping_amount",
    "description": "Choose location on the Sales Invoice where shipping charges should be added (Item list or Sales Taxes and Charges list)",
    "fieldname": "shipment_cost_target",
    "fieldtype": "Select",
    "label": "Sales Invoice Shipping Cost location (Item or Charges )",
-   "options": "Items List\nTaxes and Charges List"
+   "options": "\nItems List\nTaxes and Charges List"
   },
   {
    "fieldname": "column_break_ttll",
    "fieldtype": "Column Break"
   },
   {
-   "depends_on": "eval: doc.shipment_cost_target === \"Taxes and Charges List\"",
+   "depends_on": "eval: doc.shipment_cost_target === \"Taxes and Charges List\"  && doc.add_shipping_amount;",
    "description": "Choose an account where you'd like to track shipping. This is typically an income account.",
    "fieldname": "shipping_account",
    "fieldtype": "Link",
@@ -37,7 +46,7 @@
    "options": "Account"
   },
   {
-   "depends_on": "eval: doc.shipment_cost_target === \"Items List\"",
+   "depends_on": "eval: doc.shipment_cost_target === \"Items List\" && doc.add_shipping_amount;",
    "fieldname": "item_code",
    "fieldtype": "Link",
    "label": "Item Code for Shipping and Handling",
@@ -49,7 +58,8 @@
    "label": "Shipping and Handling Settings"
   },
   {
-   "depends_on": "eval: doc.shipment_cost_target == \"Taxes and Charges List\"",
+   "depends_on": "eval: doc.shipment_cost_target == \"Taxes and Charges List\" && doc.add_shipping_amount;",
+   "description": "Description in Sales Taxes and Charges Template takes priority over what is entered here.",
    "fieldname": "shipping_description",
    "fieldtype": "Data",
    "label": "Description for Shipping Charges"
@@ -69,12 +79,70 @@
    "fieldtype": "Link",
    "label": "Default Network Printer",
    "options": "Network Printer Settings"
+  },
+  {
+   "default": "0",
+   "fieldname": "add_shipping_amount",
+   "fieldtype": "Check",
+   "label": "Automatically add shipping amount from Shipment to Sales Invoice"
+  },
+  {
+   "fieldname": "label_retention",
+   "fieldtype": "Int",
+   "label": "Label Retention (In Days)",
+   "length": 3,
+   "options": "60\n90\n180\n365"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval: doc.default_network_printer",
+   "fieldname": "auto_print_label",
+   "fieldtype": "Check",
+   "label": "Automatically print label on shipment purchase via network printer"
+  },
+  {
+   "default": "0",
+   "description": "When enabled, a confirmation message will appear if the address is not yet verified.",
+   "fieldname": "verify_address",
+   "fieldtype": "Check",
+   "label": "Verify address on shipment submission"
+  },
+  {
+   "default": "EasyPost",
+   "fieldname": "address_verification_tool",
+   "fieldtype": "Select",
+   "label": "Address Verification Tool",
+   "options": "EasyPost\nUSPS\nUPS\nDHL"
+  },
+  {
+   "default": "USD",
+   "fieldname": "rates_currency",
+   "fieldtype": "Link",
+   "label": "Rates Currency",
+   "options": "Currency"
+  },
+  {
+   "fieldname": "shipment_doc_settings_section",
+   "fieldtype": "Section Break",
+   "label": "Shipment Doc Settings"
+  },
+  {
+   "default": "1",
+   "description": "When enabled, a confirmation message will appear saying EasyPost will not show up in the Shipping Rates table.",
+   "fieldname": "flag_multiple_parcels",
+   "fieldtype": "Check",
+   "label": "Show warning if shipment has multiple parcels"
+  },
+  {
+   "fieldname": "address_settings_section",
+   "fieldtype": "Section Break",
+   "label": "Address Settings"
   }
  ],
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-01-10 08:21:45.228310",
+ "modified": "2025-02-17 04:52:54.245453",
  "modified_by": "Administrator",
  "module": "ERPNext Shipping",
  "name": "Shipping Settings",

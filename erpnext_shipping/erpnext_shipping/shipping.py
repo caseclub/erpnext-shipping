@@ -254,83 +254,97 @@ def print_shipping_label(shipment: str):
 #send label to network printer
 @frappe.whitelist()
 def net_print_shipping_label(shipment: str, printer_setting: str):
-    shipment_doc = frappe.get_doc("Shipment", shipment)
-    service_provider = shipment_doc.service_provider
-    shipment_id = shipment_doc.shipment_id
-    shipping_label_url = None
+	shipment_doc = frappe.get_doc("Shipment", shipment)
+	service_provider = shipment_doc.service_provider
+	shipment_id = shipment_doc.shipment_id
+	shipping_label_url = None
+	is_byte_data = False # for SendCloud — when calling the print_label_from_url it gives a distinction between labels that are in byte array or URL string
 
-    # Fetch the shipping label URL
-    if service_provider == LETMESHIP_PROVIDER:
-        letmeship = get_letmeship_utils()
-        shipping_label_url = letmeship.get_label(shipment_id)
-    elif service_provider == SENDCLOUD_PROVIDER:
-        sendcloud = SendCloudUtils()
-        _labels = sendcloud.get_label(shipment_id)
-        if _labels:
-            shipping_label_url = _labels[0]
-    elif service_provider == EASYPOST_PROVIDER:
-        easypost = EasyPostUtils()
-        shipping_label_url = easypost.get_label(shipment_id)
+	# Fetch the shipping label URL
+	if service_provider == LETMESHIP_PROVIDER:
+		letmeship = get_letmeship_utils()
+		shipping_label_url = letmeship.get_label(shipment_id)
+	elif service_provider == SENDCLOUD_PROVIDER:
+		is_byte_data = True # if the provider is SendCloud tell print_label_from_url that the label is already in an array of bytes
+		sendcloud = SendCloudUtils()
+		_labels = sendcloud.get_label(shipment_id)
+		if _labels:
+			shipping_label_url = sendcloud.download_label(_labels[0])
+	elif service_provider == EASYPOST_PROVIDER:
+		easypost = EasyPostUtils()
+		shipping_label_url = easypost.get_label(shipment_id)
 
-    if not shipping_label_url:
-        frappe.throw(_("No shipping label found for shipment ID: {0}").format(shipment_id))
+	if not shipping_label_url:
+		frappe.throw(_("No shipping label found for shipment ID: {0}").format(shipment_id))
 
-    # Print the label
-    try:
-        print_label_from_url(shipping_label_url, printer_setting)
-    except Exception as e:
-        frappe.throw(_("Failed to print the shipping label: {0}").format(str(e)))
+	# Print the label
+	try:
+		print_label_from_url(shipping_label_url, printer_setting, is_byte_data, shipment)
 
-    return _("Shipping label sent to printer successfully.")
+	except Exception as e:
+		frappe.throw(_("Failed to print the shipping label: {0}").format(str(e)))
 
+	return _("Shipping label sent to printer successfully.")
 
-def print_label_from_url(label_url: str, printer_setting: str):
+def print_label_from_url(label: str, printer_setting: str, is_byte_data: bool, shipment: str):
 # Downloads a file from a URL and sends it to the configured network printer.
-    import cups
+	import cups
 
-    # Fetch EasyPost settings
-    easypost_settings = frappe.get_single("EasyPost")
-    default_printer = easypost_settings.default_network_printer
+	# Fetch EasyPost settings
+	easypost_settings = frappe.get_single("Shipping Settings")
+	default_printer = easypost_settings.default_network_printer
 
-    # Fetch printer settings
-    print_settings = frappe.get_doc("Network Printer Settings", printer_setting)
+	# Fetch printer settings
+	print_settings = frappe.get_doc("Network Printer Settings", printer_setting)
 
-    # Use the default printer if specified; otherwise, fallback to provided printer_setting
-    selected_printer = default_printer if default_printer else printer_setting
+	# Use the default printer if specified; otherwise, fallback to provided printer_setting
+	selected_printer = default_printer if default_printer else printer_setting
 
-    if not selected_printer:
-        frappe.throw(_("No printer selected or configured."))
+	label_content = b''
+	label_filename = ""
 
+	if not selected_printer:
+		frappe.throw(_("No printer selected or configured."))
 
-    try:
-        # Download the label from the URL
-        response = requests.get(label_url)
-        response.raise_for_status()
+	# if the label is in bytes, skip downloading from URL, store the label_content and set the filename that are in the arguments
+	if is_byte_data:
+		label_content = label
+		label_filename = f"label_{shipment}.pdf"
 
-        # Save the label locally
-        file_name = os.path.basename(label_url)
-        local_path = os.path.join("/tmp", file_name)
-        with open(local_path, "wb") as f:
-            f.write(response.content)
+	# otherwise, proceed with downloading first
+	else:
+		try:
+			# Download the label from the URL
+			response = requests.get(label)
+			response.raise_for_status()
 
-        # Set up CUPS connection
-        cups.setServer(print_settings.server_ip)
-        cups.setPort(print_settings.port)
-        conn = cups.Connection()
+			# store the content and set the filename
+			label_content = response.content
+			label_filename = label
 
-        # Print the file
-        conn.printFile(print_settings.printer_name, local_path, "Shipping Label", {})
+		except requests.exceptions.RequestException as e:
+			frappe.throw(_("Failed to download the label: {0}").format(e))
+		except cups.IPPError as e:
+			frappe.throw(_("Printing failed due to CUPS error: {0}").format(e))
+		except Exception as e:
+			frappe.throw(_("An error occurred while printing: {0}").format(e))
 
-        # Clean up the temporary file
-        os.remove(local_path)
+	# Save the label locally
+	file_name = os.path.basename(label_filename)
+	local_path = os.path.join("/tmp", file_name)
+	with open(local_path, "wb") as f:
+		f.write(label_content)
 
-    except requests.exceptions.RequestException as e:
-        frappe.throw(_("Failed to download the label: {0}").format(e))
-    except cups.IPPError as e:
-        frappe.throw(_("Printing failed due to CUPS error: {0}").format(e))
-    except Exception as e:
-        frappe.throw(_("An error occurred while printing: {0}").format(e))
+	# Set up CUPS connection
+	cups.setServer(print_settings.server_ip)
+	cups.setPort(print_settings.port)
+	conn = cups.Connection()
 
+	# Print the file
+	conn.printFile(print_settings.printer_name, local_path, "Shipping Label", {})
+
+	# Clean up the temporary file
+	os.remove(local_path)
 
 def save_label_as_attachment(shipment: str, content: bytes) -> str:
 #Store label as attachment to Shipment and return the URL.
