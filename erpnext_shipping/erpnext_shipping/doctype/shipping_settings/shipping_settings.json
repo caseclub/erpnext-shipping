@@ -142,7 +142,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-02-17 04:52:54.245453",
+ "modified": "2025-02-24 07:53:29.611084",
  "modified_by": "Administrator",
  "module": "ERPNext Shipping",
  "name": "Shipping Settings",
@@ -157,6 +157,21 @@
    "role": "System Manager",
    "share": 1,
    "write": 1
+  },
+  {
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "Delivery Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "Delivery User",
+   "share": 1
   }
  ],
  "sort_field": "modified",

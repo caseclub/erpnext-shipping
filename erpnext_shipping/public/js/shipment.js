@@ -82,40 +82,180 @@ frappe.ui.form.on("Shipment", {
 						callback: function(r) {
 							if (!r.exc) {
 								if (frm.doc.shipment_delivery_note) {
-									let dialog = new frappe.ui.Dialog({
-										title: __('Add Shipping Cost'),
-										fields: [
-											{
-												label: 'Shipment Cost',
-												fieldname: 'shipment_cost',
-												fieldtype: 'Currency',
-												read_only: 1,
-												default: frm.doc.shipment_amount
-											},
-											{
-												label: 'Handling Fee',
-												fieldname: 'handling_fee',
-												fieldtype: 'Currency',
-												default: 2
+									frappe.call({
+										method: "erpnext_shipping.erpnext_shipping.doctype.shipping_settings.shipping_settings.find_related_shipments",
+										args: {
+											delivery_note_name: frm.doc.shipment_delivery_note[0].delivery_note,
+											current_shipment: frm.doc.name
+										},
+										callback: function(r) {
+											if (r.message) {
+												let shipments = [
+													{
+														__checked: true,
+														name: frm.doc.name,
+														value_of_goods: frm.doc.value_of_goods,
+														description_of_content: frm.doc.description_of_content, 
+														shipment_amount: frm.doc.shipment_amount, 
+														creation: frm.doc.creation, 
+														shipment_type: frm.doc.shipment_type, 
+														pickup_type: frm.doc.pickup_type
+													},
+													...r.message
+												]
+												let shipment_cost = frm.doc.shipment_amount
+												let additional_fields = []
+												let dialog_size = 'small'
+												let shipment_cost_label = 'Shipment Cost'
+												let shipment_list = []
+
+												if (shipments.length > 1) {
+													dialog_size = 'large'
+													shipment_cost_label = 'Total Shipment Cost'
+													additional_fields =  [
+														{
+															fieldtype: 'Section Break'
+														},
+														{
+															label: 'Additional Message',
+															fieldname: 'additional_message',
+															fieldtype: 'HTML',
+															options: __('There are other shipments similar to this. Would you like to include them to the invoice?<br/><br/>')
+														},
+														{
+															label: 'Related Shipments Table',
+															fieldname: 'related_shipments',
+															fieldtype: 'Table',
+															cannot_add_rows: 1,
+															cannot_delete_rows: 1,
+															cannot_edit_rows: 1,
+															in_place_edit: 0,
+															allow_bulk_edit: 0,
+															data: shipments,
+															fields: [
+																// { 
+																// 	fieldname: 'is_included',
+																// 	fieldtype: 'Check',
+																// 	in_list_view: 1,
+																// 	label: 'Include?'
+																// },
+																{
+																	fieldname: 'name',
+																	fieldtype: 'Link',
+																	in_list_view: true,
+																	label: 'Shipment ID',
+																	options: 'Shipment',
+																	read_only:  1,
+																	columns: 3
+																},
+																{ 
+																	fieldname: 'value_of_goods',
+																	fieldtype: 'Currency',
+																	in_list_view: 1,
+																	label: 'Value',
+																	read_only:  1,
+																	columns: 2
+																},
+																{ 
+																	fieldname: 'description_of_content',
+																	fieldtype: 'Data',
+																	in_list_view: 1,
+																	label: 'Description',
+																	read_only:  1,
+																	columns: 3
+																},
+																{ 
+																	fieldname: 'shipment_amount',
+																	fieldtype: 'Currency',
+																	in_list_view: 1,
+																	label: 'Shipment Amount',
+																	read_only:  1,
+																	columns: 2
+																},
+																{
+																	fieldname: 'creation',
+																	fieldtype: 'Datetime',
+																	label: 'Date Created',
+																	read_only: 1,
+																},
+																{
+																	fieldname: 'shipment_type',
+																	fieldtype: 'Data',
+																	label: 'Shipment Type',
+																	read_only: 1,
+																},
+																{
+																	fieldname: 'pickup_type',
+																	fieldtype: 'Data',
+																	label: 'Pickup Type',
+																	read_only: 1
+																}
+															]
+														},
+														{
+															fieldtype: 'Column Break',
+															fieldname: 'shipping_cost_column'  // Start first column
+														},
+													]
+												}
+
+												let shipping_cost_dialog = new frappe.ui.Dialog({
+													title: __('Add Shipping Cost'),
+													fields: [
+														...additional_fields,
+														{
+															label: shipment_cost_label,
+															fieldname: 'shipment_cost',
+															fieldtype: 'Currency',
+															read_only: 1,
+															default: shipment_cost
+														},
+														{
+															label: 'Handling Fee',
+															fieldname: 'handling_fee',
+															fieldtype: 'Currency',
+															default: 2
+														}
+													],
+													size: dialog_size,
+													primary_action_label: 'Proceed',
+													primary_action: function (values) {
+														frappe.model.open_mapped_doc({
+															method: "erpnext_shipping.erpnext_shipping.doctype.shipping_settings.shipping_settings.make_sales_invoice_from_shipment",
+															frm: frm,
+															args: {
+																delivery_note: frm.doc.shipment_delivery_note[0].delivery_note,
+																shipping_total: values.shipment_cost + (values.handling_fee || 0),
+																shipments: shipment_list
+															},
+															freeze: true,
+															freeze_message: "Creating New Sales Invoice",
+														})
+													}
+												})
+
+												if (shipments.length > 1) {
+													shipping_cost_dialog.$wrapper.find('.modal-dialog').attr('id', 'shipping-cost-modal')
+													shipping_cost_dialog.$wrapper.find('.form-column[data-fieldname="__column_1"]').addClass('col-md-9')
+													shipping_cost_dialog.$wrapper.find('.form-column[data-fieldname="shipping_cost_column"]').addClass('col-md-3')
+													shipping_cost_dialog.$wrapper.find('.panel-title').hide()
+													console.log(shipping_cost_dialog.$wrapper)
+													shipping_cost_dialog.$wrapper.find('use[href="#icon-down"]').attr('href', '#icon-up')
+													shipping_cost_dialog.$wrapper.find('use[href="#icon-edit"]').attr('href', '#icon-down')
+													shipping_cost_dialog.$wrapper.find('div[data-fieldname="related_shipments"] .grid-row input[type="checkbox"]').on('change', function () {
+														let table_data = shipping_cost_dialog.get_value('related_shipments')
+														let selected_shipments = table_data.filter(row => row.__checked)
+														let shipment_sum = selected_shipments.reduce((sum, shipment) => sum + shipment.shipment_amount, 0)
+														shipment_list = selected_shipments.map(shipment => shipment.name)
+														console.log(shipment_list)
+														shipping_cost_dialog.set_value('shipment_cost', shipment_sum)
+													})
+												}
+												
+												shipping_cost_dialog.show()
 											}
-										],
-										primary_action_label: 'Proceed',
-										primary_action: function (values) {
-											frappe.model.open_mapped_doc({
-												method: "erpnext_shipping.erpnext_shipping.doctype.shipping_settings.shipping_settings.make_sales_invoice_from_shipment",
-												frm: frm,
-												args: {
-													delivery_note: frm.doc.shipment_delivery_note[0].delivery_note,
-													shipping_total: frm.doc.shipment_amount + (values.handling_fee || 0),
-													tracking_url: frm.doc.tracking_url
-												},
-												freeze: true,
-												freeze_message: "Creating New Sales Invoice",
-											})
 										}
 									})
-									
-									dialog.show()
 								}
 								else {
 									frappe.msgprint({

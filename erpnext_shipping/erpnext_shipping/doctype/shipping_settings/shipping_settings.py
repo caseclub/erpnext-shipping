@@ -90,18 +90,24 @@ def make_sales_invoice_from_shipment(shipment):
 	shipment_cost_target = shipping_settings.shipment_cost_target
 
 	si_doc = make_sales_invoice(delivery_note)
+	si_doc.update_stock = 0
 	form_link = frappe.utils.get_url_to_form("Shipping Settings", "")
 
 	if shipment_cost_target == "Items List":
 		item_code = shipping_settings.item_code
 		if item_code:
+			company_name = frappe.get_value("Delivery Note", delivery_note, "company")
 			si_doc.append("items", {
 				'item_code': item_code,
+				'item_name': frappe.db.get_value("Item", item_code, "item_name"),
 				'description': frappe.db.get_value("Item", item_code, "description"),
 				'qty': 1,
 				'uom': frappe.db.get_value("Item", item_code, "stock_uom"),
 				'rate': float(shipping_total),
-				'price_list_rate': float(shipping_total)
+				'price_list_rate': float(shipping_total),
+				'income_account': frappe.db.get_value("Company", company_name, "default_income_account"),
+				'expense_account': frappe.db.get_value("Company", company_name, "default_expense_account"),
+				'cost_center': frappe.db.get_value("Company", company_name, "cost_center")
 			})
 		else:
 			frappe.throw('The item code for Shipping and Handling has not been set. Click <a href="{form_link}">here</a> to add the item code.'.format(form_link=form_link))
@@ -135,7 +141,11 @@ def make_sales_invoice_from_shipment(shipment):
 		else:
 			frappe.throw('The account head and/or description for the Shipping Charges has not been set. Click <a href="{form_link}">here</a> to add them.'.format(form_link=form_link))
 
-	si_doc.shipment = shipment
+	if len(frappe.flags.args.shipments) == 1:
+		si_doc.shipment = frappe.flags.args.shipments[0]
+	else:
+		si_doc.shipment = ', '.join(frappe.flags.args.shipments)
+
 
 	return si_doc
 
@@ -321,3 +331,20 @@ def validate_submission(shipment_name, address_name):
 	}
 
 
+@frappe.whitelist()
+def find_related_shipments(delivery_note_name, current_shipment):
+	shipment_delivery_note = frappe.qb.DocType('Shipment Delivery Note')
+	shipment = frappe.qb.DocType('Shipment')
+	sales_invoice = frappe.qb.DocType('Sales Invoice')
+
+	query = (frappe.qb.from_(shipment_delivery_note)
+		.inner_join(shipment)
+		.on(shipment.name == shipment_delivery_note.parent)
+		.select(shipment.name, shipment.value_of_goods, shipment.description_of_content, shipment.shipment_amount, shipment.creation, shipment.shipment_type, shipment.pickup_type)
+		.where(shipment_delivery_note.delivery_note == delivery_note_name)
+		.where(shipment.name != current_shipment)
+		.where((shipment.status == 'Booked') | (shipment.status == 'Completed'))
+		.where(shipment.name.notin(frappe.qb.from_(sales_invoice).select(sales_invoice.shipment).where(sales_invoice.shipment.isnotnull())))
+	)
+
+	return query.run(as_dict=1)

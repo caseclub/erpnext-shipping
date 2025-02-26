@@ -65,7 +65,7 @@ class EasyPostUtils():
 				'city': delivery_address.city,
 				'state': delivery_address.state,
 				'zip': delivery_address.pincode,
-				'country': 'US',
+				'country': delivery_address.country,
 				'phone': delivery_contact.phone
 			},
 			'from_address': {
@@ -75,7 +75,7 @@ class EasyPostUtils():
 				'city': pickup_address.city,
 				'state': pickup_address.state,
 				'zip': pickup_address.pincode,
-				'country': 'US',
+				'country': pickup_address.country,
 				'phone': pickup_contact.phone
 			},
 			'parcel': parcel,
@@ -99,6 +99,8 @@ class EasyPostUtils():
 				auth=(self.api_key, "")
 			)
 			response_dict = response.json()
+			# prepared = response.prepare()
+			# frappe.throw(str(response.request.body.decode()) if response.request.body else "No body")
 
 			if "error" in response_dict:
 				error_message = response_dict["error"]["message"]
@@ -172,7 +174,7 @@ class EasyPostUtils():
 		parcel_in_english['length'] = parcel['length'] / 2.54
 		parcel_in_english['width'] = parcel['width'] / 2.54
 		parcel_in_english['height'] = parcel['height'] / 2.54
-		parcel_in_english['weight'] = parcel['weight'] * 2.20462
+		parcel_in_english['weight'] = parcel['weight'] * 35.27396195
 
 		return parcel_in_english
 
