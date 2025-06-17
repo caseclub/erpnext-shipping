@@ -661,12 +661,13 @@ async function select_from_available_services(frm, available_services) {
 	let shipping_settings = await get_shipping_settings()
 
 	select_dialog.fields_dict.available_services.$wrapper.html(
-		frappe.render_template("shipment_service_selector", {
-			header_columns: [__("Platform"), __("Carrier"), __("Parcel Service"), __("Price"), ""],
-			data: arranged_services,
-			rates_currency: shipping_settings.rates_currency
-		})
+	  frappe.render_template("shipment_service_selector", {
+		header_columns: [__("Platform"), __("Carrier"), __("Parcel Service"), __("Days"), __("Price"), ""],
+		data: arranged_services,
+		rates_currency: shipping_settings.rates_currency
+	  })
 	);
+
 
 	select_dialog.$body.on("click", ".btn", function () {
 		let service_type = $(this).attr("data-type");

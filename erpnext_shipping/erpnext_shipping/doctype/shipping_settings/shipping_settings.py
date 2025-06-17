@@ -263,10 +263,11 @@ def verify_address(
 					verification_status = "Fail"
 
 			address_doc.verification_status = verification_status
-			if verification_status == "Success":
-				address_doc.is_verified = 1
-			else:
-				address_doc.is_verified = 0
+            # Commenting this out because 'is_verified' column doesn't exist in Address DocType
+			#if verification_status == "Success":
+			#	address_doc.is_verified = 1
+			#else:
+			#	address_doc.is_verified = 0
 				
 			address_doc.save()
 
@@ -297,7 +298,7 @@ def update_address(
 def validate_submission(shipment_name, address_name):
 	is_currency_set = frappe.db.get_single_value("Shipping Settings", "rates_currency")
 	is_single_parcel = len(frappe.get_doc("Shipment", shipment_name).as_dict().shipment_parcel) == 1
-	is_address_verified = frappe.db.get_value("Address", address_name, "is_verified")
+	#is_address_verified = frappe.db.get_value("Address", address_name, "is_verified")
 	error_list = []
 	error_messages = {}
 
@@ -311,9 +312,9 @@ def validate_submission(shipment_name, address_name):
 		error_list.append("multiple_parcels")
 		error_messages["multiple_parcels"] = 'EasyPost will not appear in the rates table because there are multiple parcels in this shipment. To see EasyPost in the list, reduce your parcel to 1 only.'
 
-	if not is_address_verified:
-		error_list.append("unverified_address")
-		error_messages["unverified_address"] = 'The address is unverified so ensure that it\'s correct. To correct the address or perform a verification, visit the address doc <a target="blank" href={}>here</a>'.format(address_link)
+#	if not is_address_verified:
+#		error_list.append("unverified_address")
+#		error_messages["unverified_address"] = 'The address is unverified so ensure that it\'s correct. To correct the address or perform a verification, visit the address doc <a target="blank" href={}>here</a>'.format(address_link)
 
 	def formulate_digest_message():
 		message = ""
@@ -324,7 +325,7 @@ def validate_submission(shipment_name, address_name):
 		return "The submission was halted because of the following:<br/><ol>{}</ol>".format(message)
 
 	return {
-		"status": "validated" if is_currency_set and is_single_parcel and is_address_verified else "unvalidated",
+		"status": "validated" if is_currency_set and is_single_parcel else "unvalidated",
 		"error_type": "digest" if not is_currency_set and len(error_list) > 1 else "individual",
 		"error_list": error_list,
 		"error_messages": formulate_digest_message() if not is_currency_set and len(error_list) > 1 else error_messages
