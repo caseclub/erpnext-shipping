@@ -1,21 +1,48 @@
 # apps/erpnext_shipping/erpnext_shipping/utils/ups_direct.py
+#/apps/erpnext_shipping/erpnext_shipping/erpnext_shipping/doctype/easypost
 import requests, json, datetime, uuid
 import frappe
+from frappe.utils.password import get_decrypted_password
+import re
 from requests.exceptions import HTTPError
 
-# --- HARD-CODED creds for POC ---
-UPS_CLIENT_ID     = "aiQdAgIAOWlZRfeJHr3uy4pQEsNmCaoXc9ljG697xMjcC7E9"
-UPS_CLIENT_SECRET = "w0G9euDGB1lSnXG7JMlSzaDGGAjIX5ksWxXoxAxG9kfGqfXJEkLkYuwXZAxXW7G3"
-UPS_SHIPPER_NUM   = "0785X0"          # your own 6-char account
+def _get_ups_creds():
+    """
+    Load UPS creds from the EasyPost singleton at runtime.
+    Avoids frappe calls at import-time which break method resolution.
+    """
+    # EasyPost is a singleton doctype
+    docname = "EasyPost"
+    client_id = frappe.db.get_single_value(docname, "custom_ups_client_id")
+    shipper  = frappe.db.get_single_value(docname, "custom_ups_shipper_number")
+    # Use the low-level decryptor so we don't need a Document at import time
+    secret   = get_decrypted_password(docname, docname, "custom_ups_client_secret", raise_exception=False)
+
+    if not client_id or not secret or not shipper:
+        frappe.throw("UPS credentials are missing in EasyPost settings (client id/secret/shipper).")
+    return client_id, secret, shipper
 
 # Endpoints (test vs prod)
-UPS_BASE_URL   = "https://wwwcie.ups.com"          # ← add this constant
+def _get_ups_base_url():
+    docname = "EasyPost"
+    use_test = frappe.db.get_single_value(docname, "use_test_environment")
+    return "https://wwwcie.ups.com" if use_test else "https://onlinetools.ups.com"
+
+UPS_BASE_URL   = _get_ups_base_url()
 UPS_OAUTH_URL  = f"{UPS_BASE_URL}/security/v1/oauth/token"
-UPS_RATE_URL = f"{UPS_BASE_URL}/api/rating/v2205/Shop"   # <— path param
+UPS_RATE_URL = f"{UPS_BASE_URL}/api/rating/v2205/Shop"
 UPS_SHIP_URL   = f"{UPS_BASE_URL}/api/shipments/v1/ship"
+
+def build_parcel_list(rows):
+    parcels = []
+    for p in rows:
+        parcels.append(p.copy())      # rows are already dicts here
+    return parcels
 
 class UPSDirect:
     def __init__(self):
+        # pull creds now (runtime), not at import time
+        self.ups_client_id, self.ups_client_secret, self.ups_shipper_num = _get_ups_creds()
         self.token = self._oauth()
         self._base_url = UPS_BASE_URL
     
@@ -57,8 +84,8 @@ class UPSDirect:
     
     def _headers(self) -> dict:
         return {
-            "Authorization": f"Bearer {self.token}",      # the OAuth token
-            "x-merchant-id": UPS_CLIENT_ID,               # ← back to client-id
+            "Authorization": f"Bearer {self.token}",
+            "x-merchant-id": self.ups_client_id,
             "Accept": "application/json",
             "Content-Type": "application/json",
             "transId": str(uuid.uuid4()),
@@ -71,13 +98,13 @@ class UPSDirect:
         import base64
 
         # construct Basic header
-        creds = f"{UPS_CLIENT_ID}:{UPS_CLIENT_SECRET}".encode("utf-8")
+        creds = f"{self.ups_client_id}:{self.ups_client_secret}".encode("utf-8")
         basic_token = base64.b64encode(creds).decode("utf-8")
 
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
-            "x-merchant-id": UPS_CLIENT_ID,
+            "x-merchant-id": self.ups_client_id,
             "Authorization": f"Basic {basic_token}",
         }
         payload = "grant_type=client_credentials"
@@ -102,6 +129,17 @@ class UPSDirect:
             }
         }
 
+    def _phone(self, raw: str | None) -> dict | None:
+        """
+        Return {"Phone": {"Number": "7147798794"}}  or  None.
+        UPS wants 10–15 digits, no punctuation.
+        """
+        if not raw:
+            return None
+        num = re.sub(r"\D", "", raw)[:15]
+        if len(num) < 10:        # UPS rejects shorter numbers
+            return None
+        return {"Phone": {"Number": num}}
 
     def _package(self, parcel):
         """
@@ -130,7 +168,7 @@ class UPSDirect:
 
 
     # ---------- rate ----------
-    def rate(self, shipper_num, bill_acct, bill_zip, to_addr, from_addr, parcel):
+    def rate(self, shipper_num, bill_acct, bill_zip, to_addr, from_addr, parcels):
         body = {
             "RateRequest": {
                  "Request": {
@@ -150,7 +188,7 @@ class UPSDirect:
                     },
                     "ShipFrom": self._address(from_addr),
                     "ShipTo":   self._address(to_addr),
-                    "Package": [ self._package(parcel) ]   # ← Pascal-case
+                    "Package": [self._package(p) for p in parcels]
                 }
             }
         }
@@ -177,9 +215,9 @@ class UPSDirect:
 
 
     # ---------- ship / buy ----------
-    def ship(self, shipper_num, bill_acct, bill_zip, to_addr, from_addr, parcel, service_code):
+    def ship(self, shipper_num, bill_acct, bill_zip, to_addr, from_addr, parcels, service_code):
         today = datetime.date.today().strftime("%Y%m%d")      
-
+        
         if bill_acct and bill_acct.strip() != shipper_num:
             # third-party billing
             payer_block = {
@@ -212,7 +250,7 @@ class UPSDirect:
                     "PaymentInformation": {
                         "ShipmentCharge": [payer_block]
                     },
-                    "Package": [self._package(parcel)],
+                    "Package": [self._package(p) for p in parcels],
                     "ShipmentDate": today,
                 },
                 "LabelSpecification": {
@@ -248,25 +286,32 @@ class UPSDirect:
         # label looks nicer with a contact name too
         if addr.get("name"):
             block["AttentionName"] = addr["name"]
+            
+        phone_block = self._phone(addr.get("phone"))
+        if phone_block:
+            block.update(phone_block)
+        
         return block
 
 
     def _party(self, person_or_co: str, addr: dict) -> dict:
-        """
-        Build a ShipFrom / ShipTo object.
-
-        If you pass a business name put it in CompanyName **and** duplicate it
-        into AttentionName;  
-        if it’s an individual pass it only as Name.
-        """
-        if addr.get("company"):                      # commercial address
-            return {
-                "CompanyName": person_or_co,
+        # Base block
+        if addr.get("company"):  # commercial address
+            block = {
+                "CompanyName":   person_or_co,
+                "AttentionName": person_or_co,
+                "Address":       self._address(addr)["Address"],
+            }
+        else:  # residential / individual – UPS wants Name
+            block = {
+                "Name":    person_or_co,
                 "AttentionName": person_or_co,
                 "Address": self._address(addr)["Address"],
             }
-        # residential / individual ­– UPS wants Name
-        return {
-            "Name": person_or_co,
-            "Address": self._address(addr)["Address"],
-        }
+
+        # Inject phone when valid
+        phone_block = self._phone(addr.get("phone"))
+        if phone_block:
+            block.update(phone_block)
+
+        return block

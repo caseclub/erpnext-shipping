@@ -1,6 +1,5 @@
 # Copyright (c) 2020, Frappe Technologies and contributors
 # For license information, please see license.txt
-#/apps/erpnext_shipping/erpnext_shipping/erpnext_shipping
 import base64
 import uuid
 import json
@@ -84,7 +83,7 @@ def fetch_shipping_rates(
         sendcloud_prices = match_parcel_service_type_carrier(sendcloud_prices, "carrier", "service_name")
         shipment_prices += sendcloud_prices
 
-    if easypost_enabled:
+    if easypost_enabled and len(parcels) == 1:
         pickup_contact = None
         delivery_contact = None
         if pickup_from_type != "Company":
@@ -293,12 +292,8 @@ def create_shipment(
             except frappe.DoesNotExistError:
                 pass
 
-        # FETCH delivery_notes from Shipment child table if not provided/empty
-        if not delivery_notes:
-            delivery_notes = [row.delivery_note for row in shipment_doc.get("shipment_delivery_note") or [] if row.delivery_note]
-
-        if delivery_notes:
-            update_delivery_note(delivery_notes=delivery_notes, shipment_info=shipment_info)
+                if delivery_notes:
+                    update_delivery_note(delivery_notes=delivery_notes, shipment_info=shipment_info)
 
     return shipment_info
 
@@ -489,8 +484,8 @@ def update_tracking(shipment, service_provider, shipment_id, delivery_notes=None
     if not tracking_data:
         return
 
-    shipment_doc = frappe.get_doc("Shipment", shipment)  # Renamed for clarity
-    shipment_doc.db_set(
+    shipment = frappe.get_doc("Shipment", shipment)
+    shipment.db_set(
         {
             "awb_number": tracking_data.get("awb_number"),
             "tracking_status": tracking_data.get("tracking_status"),
@@ -499,20 +494,8 @@ def update_tracking(shipment, service_provider, shipment_id, delivery_notes=None
         }
     )
 
-    # FETCH delivery_notes from Shipment child table if not provided/empty
-    if not delivery_notes:
-        delivery_notes = [row.delivery_note for row in shipment_doc.get("shipment_delivery_note") or [] if row.delivery_note]
-
-    # CONSTRUCT minimal shipment_info from Shipment doc (fallback)
-    shipment_info = None
-    if delivery_notes:  # Only build if we'll use it
-        shipment_info = {
-            "carrier": shipment_doc.carrier,
-            "carrier_service": shipment_doc.carrier_service,
-        }
-
     if delivery_notes:
-        update_delivery_note(delivery_notes=delivery_notes, shipment_info=shipment_info, tracking_info=tracking_data)
+        update_delivery_note(delivery_notes=delivery_notes, tracking_info=tracking_data)
 
 
 def update_delivery_note(delivery_notes, shipment_info=None, tracking_info=None):
