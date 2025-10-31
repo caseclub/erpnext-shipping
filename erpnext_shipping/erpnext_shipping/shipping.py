@@ -350,6 +350,8 @@ def print_shipping_label(shipment: str):
                 )
             except Exception:
                 pass
+    else:
+        frappe.throw(_("Unsupported service provider for label printing: {0}").format(service_provider))
 
 
     return shipping_label
