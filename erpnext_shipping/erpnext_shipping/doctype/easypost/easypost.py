@@ -54,7 +54,12 @@ class EasyPost(Document):
 class EasyPostUtils:
     def __init__(self):
         settings = frappe.get_single("EasyPost")
-        self.api_key = settings.get_password("test_key")
+        
+        if settings.use_test_environment:
+            self.api_key = settings.get_password("test_key")
+        else:
+            self.api_key = settings.get_password("production_key")  # Replace with your production key field name
+        
         self.enabled = settings.enabled
         self.label_format = settings.label_format
         self.currency = frappe.db.get_single_value("Shipping Settings", "rates_currency")
