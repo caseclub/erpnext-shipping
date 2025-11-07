@@ -124,8 +124,3 @@ def update_tracking_info_daily():
             shipment_doc.shipment_id,
             delivery_notes_list,
         )
-
-        if tracking_info:
-            fields = ["awb_number", "tracking_status", "tracking_status_info", "tracking_url"]
-            for field in fields:
-                shipment_doc.db_set(field, tracking_info.get(field))
