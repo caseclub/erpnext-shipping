@@ -37,14 +37,11 @@ def build_parcel_list(rows):
     parcels = []
     for row in rows:
         qty = int(row.get("count") or 1)
-        weight_lbs = flt(row.get("weight") or 0)
-        weight_oz_extra = flt(row.get("custom_weight_oz") or 0)
-        total_weight_oz = (weight_lbs * 16) + weight_oz_extra
         parcel = {
             "length":  row["length"],
             "width":   row["width"],
             "height":  row["height"],
-            "weight":  total_weight_oz,  # EasyPost wants ounces
+            "weight":  row["weight"],
         }
         parcels.extend([parcel] * qty)
     return parcels
