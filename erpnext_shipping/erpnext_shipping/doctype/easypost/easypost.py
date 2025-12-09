@@ -135,6 +135,12 @@ class EasyPostUtils:
         if not ship_doc:
             frappe.throw(_("Could not locate parent Shipment for delivery address"))
 
+        # Determine from_name: use company name if pickup_from_type is "Company", else fallback to contact name
+        if ship_doc.pickup_from_type == "Company" and ship_doc.pickup_company:
+            from_name = frappe.db.get_value("Company", ship_doc.pickup_company, "company_name") or "Shipping Dept"
+        else:
+            from_name = f"{pickup_contact.first_name} {pickup_contact.last_name}"
+
         bill_3p = (
             ship_doc.get("custom_ship_on_third_party") in (1, "1", True, "Yes")
             and bool(ship_doc.get("custom_third_party_account"))
@@ -174,7 +180,7 @@ class EasyPostUtils:
                 "phone":   self._phone(delivery_contact, delivery_address),
             },
             "from_address": {
-                "name":    f"{pickup_contact.first_name} {pickup_contact.last_name}",
+                "name":    from_name,
                 "street1": pickup_address.address_line1,
                 "street2": pickup_address.address_line2,
                 "city":    pickup_address.city,
