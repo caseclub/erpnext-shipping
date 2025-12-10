@@ -260,7 +260,6 @@ class UPSDirect:
             }
         }
         #print(f"Ship Payload: {body}", flush=True)
-        frappe.log_error("DEBUG UPS ship URL", UPS_SHIP_URL)
         r = requests.post(UPS_SHIP_URL, json=body, headers=self._headers())
         if r.status_code >= 400:
             frappe.log_error(

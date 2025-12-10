@@ -3,6 +3,8 @@
 import frappe
 from frappe import _
 from frappe.utils.data import get_link_to_form
+from erpnext.stock.doctype.shipment.shipment import get_company_contact
+
 
 
 def get_tracking_url(carrier, tracking_number):
@@ -56,17 +58,48 @@ def get_country_code(country_name):
 
 def get_contact(contact_name):
     fields = ["first_name", "last_name", "email_id", "phone", "mobile_no", "gender"]
-    contact = frappe.db.get_value("Contact", contact_name, fields, as_dict=1)
+    contact = frappe.db.get_value("Contact", contact_name, fields, as_dict=1) if contact_name else None
+    
+    if contact is None:
+        # Fallback to company contact with user=None
+        contact = get_company_contact(user=None)
+    
+    return normalize_contact(contact)
 
-    if not contact.last_name:
-        frappe.throw(
-            msg=_("Please set Last Name for Contact {0}").format(get_link_to_form("Contact", contact_name)),
-            title=_("Last Name is mandatory to continue."),
-        )
-
-    if not contact.phone:
-        contact.phone = contact.mobile_no
-
+# After the existing get_contact function, add:
+def normalize_contact(contact):
+    if contact is None:
+        # Build generic fallback using default Company
+        default_company = frappe.defaults.get_user_default("Company")
+        company_doc = frappe.get_cached_doc("Company", default_company) if default_company else None
+        fallback = frappe._dict({  # ← Change: Use frappe._dict instead of {}
+            "first_name": "Receiving",
+            "last_name": "Dept",
+            "email_id": company_doc.email if company_doc else "",
+            "phone": company_doc.phone_no if company_doc else "",
+            "mobile_no": "",
+            "gender": "",
+        })
+        frappe.log_error("Contact fallback used", "normalize_contact created generic contact")
+        return fallback
+    
+    # Normalize existing dict (convert to frappe._dict if needed for consistency)
+    if not isinstance(contact, frappe._dict):
+        contact = frappe._dict(contact)
+    
+    if not contact.get("first_name") and not contact.get("last_name"):
+        contact["first_name"] = "Receiving"
+        contact["last_name"] = "Dept"
+    if not contact.get("phone") and contact.get("mobile_no"):
+        contact["phone"] = contact["mobile_no"]
+    if not contact.get("email_id") or not contact.get("phone"):
+        default_company = frappe.defaults.get_user_default("Company")
+        if default_company:
+            company_doc = frappe.get_cached_doc("Company", default_company)
+            if not contact.get("email_id"):
+                contact["email_id"] = company_doc.email or ""
+            if not contact.get("phone"):
+                contact["phone"] = company_doc.phone_no or ""
     return contact
 
 

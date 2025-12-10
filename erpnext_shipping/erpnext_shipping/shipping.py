@@ -19,6 +19,7 @@ from erpnext_shipping.erpnext_shipping.utils import (
     get_address,
     get_contact,
     match_parcel_service_type_carrier,
+    normalize_contact,
 )
 
 from erpnext_shipping.erpnext_shipping.doctype.easypost.easypost import EASYPOST_PROVIDER, EasyPostUtils
@@ -53,10 +54,18 @@ def fetch_shipping_rates(
         if pickup_from_type != "Company":
             pickup_contact = get_contact(pickup_contact_name)
         else:
-            pickup_contact = get_company_contact(user=pickup_contact_name)
-            pickup_contact.email_id = pickup_contact.pop("email", None)
+            user = pickup_contact_name if frappe.db.exists("User", pickup_contact_name) else None
+            pickup_contact = normalize_contact(get_company_contact(user=user))
+            if pickup_contact:
+                pickup_contact["email_id"] = pickup_contact.pop("email", None)
 
-        delivery_contact = get_contact(delivery_contact_name)
+        if delivery_to_type != "Company":
+            delivery_contact = get_contact(delivery_contact_name)
+        else:
+            user = delivery_contact_name if frappe.db.exists("User", delivery_contact_name) else None
+            delivery_contact = normalize_contact(get_company_contact(user=user))
+            if delivery_contact:
+                delivery_contact["email_id"] = delivery_contact.pop("email", None)
 
         letmeship = get_letmeship_utils()
         letmeship_prices = (
@@ -90,16 +99,18 @@ def fetch_shipping_rates(
         if pickup_from_type != "Company":
             pickup_contact = get_contact(pickup_contact_name)
         else:
-            pickup_contact = get_company_contact(user=pickup_contact_name)
-            pickup_contact.email_id = pickup_contact.pop("email", None)
+            user = pickup_contact_name if frappe.db.exists("User", pickup_contact_name) else None
+            pickup_contact = normalize_contact(get_company_contact(user=user))
+            if pickup_contact:
+                pickup_contact["email_id"] = pickup_contact.pop("email", None)
 
-        # if delivery_to_type != "Company":
-        #     delivery_contact = get_contact(delivery_contact_name)
-        # else:
-        #     delivery_contact = get_company_contact(user=pickup_contact_name)
-        #     delivery_contact.email_id = delivery_contact.pop("email", None)
-
-        delivery_contact = get_contact(delivery_contact_name)
+        if delivery_to_type != "Company":
+            delivery_contact = get_contact(delivery_contact_name)
+        else:
+            user = delivery_contact_name if frappe.db.exists("User", delivery_contact_name) else None
+            delivery_contact = normalize_contact(get_company_contact(user=user))
+            if delivery_contact:
+                delivery_contact["email_id"] = delivery_contact.pop("email", None)
 
         easypost = EasyPostUtils()
         easypost_prices = (
@@ -215,14 +226,23 @@ def create_shipment(
     delivery_address = get_address(delivery_address_name)
     delivery_company_name = get_delivery_company_name(shipment)
 
+    pickup_contact = None
     if pickup_from_type != "Company":
         pickup_contact = get_contact(pickup_contact_name)
-
     else:
-        pickup_contact = get_company_contact(user=pickup_contact_name)
-        pickup_contact.email_id = pickup_contact.pop("email", None)
+        user = pickup_contact_name if frappe.db.exists("User", pickup_contact_name) else None
+        pickup_contact = normalize_contact(get_company_contact(user=user))
+        if pickup_contact:
+            pickup_contact["email_id"] = pickup_contact.pop("email", None)
 
-    delivery_contact = get_contact(delivery_contact_name)
+    delivery_contact = None
+    if delivery_to_type != "Company":
+        delivery_contact = get_contact(delivery_contact_name)
+    else:
+        user = delivery_contact_name if frappe.db.exists("User", delivery_contact_name) else None
+        delivery_contact = normalize_contact(get_company_contact(user=user))
+        if delivery_contact:
+            delivery_contact["email_id"] = delivery_contact.pop("email", None)
 
     if service_info["service_provider"] == LETMESHIP_PROVIDER:
         letmeship = get_letmeship_utils()
@@ -261,7 +281,8 @@ def create_shipment(
         easypost = EasyPostUtils()
         shipment_info = easypost.create_shipment(
             service_info=service_info,
-            delivery_address=delivery_address
+            delivery_address=delivery_address,
+            shipment_name=shipment.name  # ← Added: pass ERPNext Shipment name for logic
         )
 
     if shipment_info:
@@ -295,7 +316,7 @@ def create_shipment(
 
         # FETCH delivery_notes from Shipment child table if not provided/empty
         if not delivery_notes:
-            delivery_notes = [row.delivery_note for row in shipment_doc.get("shipment_delivery_note") or [] if row.delivery_note]
+            delivery_notes = [row.delivery_note for row in shipment.get("shipment_delivery_note") or [] if row.delivery_note]
 
         if delivery_notes:
             update_delivery_note(delivery_notes=delivery_notes, shipment_info=shipment_info)
@@ -340,7 +361,7 @@ def print_shipping_label(shipment: str):
         # 1) try direct URL saved earlier
         shipping_label = shipment_doc.get("custom_shipping_label")
 
-        # 2) fall back to extracting from the JSON blob (in case the first save failed)
+        # 2) fallback to extracting from the JSON blob (in case the first save failed)
         if (not shipping_label) and shipment_doc.get("custom_postage_label"):
             try:
                 pl = json.loads(shipment_doc.custom_postage_label)
