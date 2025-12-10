@@ -6,6 +6,26 @@ from frappe.utils.password import get_decrypted_password
 import re
 from requests.exceptions import HTTPError
 
+# US State Name to Code Mapping (case-insensitive lookup)
+US_STATE_CODES = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
+    "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
+    "florida": "FL", "georgia": "GA", "hawaii": "HI", "idaho": "ID",
+    "illinois": "IL", "indiana": "IN", "iowa": "IA", "kansas": "KS",
+    "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV",
+    "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+    "north carolina": "NC", "north dakota": "ND", "ohio": "OH", "oklahoma": "OK",
+    "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI", "south carolina": "SC",
+    "south dakota": "SD", "tennessee": "TN", "texas": "TX", "utah": "UT",
+    "vermont": "VT", "virginia": "VA", "washington": "WA", "west virginia": "WV",
+    "wisconsin": "WI", "wyoming": "WY",
+    # Territories (optional, but complete)
+    "american samoa": "AS", "district of columbia": "DC", "guam": "GU",
+    "northern mariana islands": "MP", "puerto rico": "PR", "virgin islands": "VI"
+}
+
 def _get_ups_creds():
     """
     Load UPS creds from the EasyPost singleton at runtime.
@@ -119,11 +139,23 @@ class UPSDirect:
 
     # ---------- build helpers ----------
     def _address(self, d):
+        # Normalize state: try as code first, then lookup by name
+        raw_state = (d.get("state") or "").strip().upper()
+        if len(raw_state) == 2:  # Already a code? Use as-is
+            state_code = raw_state
+        else:
+            # Lookup by lowercase full name
+            state_key = (d.get("state") or "").strip().lower()
+            state_code = US_STATE_CODES.get(state_key)
+            if not state_code:
+                # Fallback or error (customize as needed)
+                raise ValueError(f"Invalid state: {d['state']}. Must be 2-letter code or full name.")
+
         return {
             "Address": {
                 "AddressLine": [d["street1"]],
                 "City": d["city"],
-                "StateProvinceCode": d["state"],
+                "StateProvinceCode": state_code,
                 "PostalCode": d["zip"],
                 "CountryCode": "US",
             }
