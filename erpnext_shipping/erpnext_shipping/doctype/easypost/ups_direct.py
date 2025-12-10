@@ -315,7 +315,8 @@ class UPSDirect:
             "Address": self._address(addr)["Address"],
         }
         # label looks nicer with a contact name too
-        if addr.get("name"):
+        contact = addr.get("name")
+        if contact and contact != nickname:
             block["AttentionName"] = addr["name"]
             
         phone_block = self._phone(addr.get("phone"))
@@ -329,16 +330,20 @@ class UPSDirect:
         # Base block
         if addr.get("company"):  # commercial address
             block = {
-                "CompanyName":   person_or_co,
-                "AttentionName": person_or_co,
+                "Name":          addr.get("company") or person_or_co,  # Use "Name" to match REST API; company if available, fallback to name
                 "Address":       self._address(addr)["Address"],
             }
+            # Add AttentionName only if it's different from Name
+            if person_or_co and person_or_co != block["Name"]:
+                block["AttentionName"] = person_or_co
         else:  # residential / individual – UPS wants Name
             block = {
-                "Name":    person_or_co,
-                "AttentionName": person_or_co,
+                "Name":    addr.get("company") or person_or_co,
                 "Address": self._address(addr)["Address"],
             }
+            # Add AttentionName only if it's different from Name
+            if person_or_co and person_or_co != block["Name"]:
+                block["AttentionName"] = person_or_co
 
         # Inject phone when valid
         phone_block = self._phone(addr.get("phone"))

@@ -135,14 +135,20 @@ class EasyPostUtils:
         if not ship_doc:
             frappe.throw(_("Could not locate parent Shipment for delivery address"))
 
-        # Compute attention and company for to_address
-        attention, company = self._get_attention_and_company(ship_doc, delivery_contact)
+        # Fetch receiver company name if conditions met
+        delivery_company = None
+        if ship_doc.delivery_customer and ship_doc.delivery_customer != ship_doc.delivery_contact_name:
+            delivery_company = (
+                frappe.db.get_value("Customer", ship_doc.delivery_customer, "customer_name")
+                or ship_doc.delivery_customer  # Fallback to link value if no customer_name
+            )
 
         # Determine from_name: use company name if pickup_from_type is "Company", else fallback to contact name
         if ship_doc.pickup_from_type == "Company" and ship_doc.pickup_company:
             from_name = frappe.db.get_value("Company", ship_doc.pickup_company, "company_name") or "Shipping Dept"
         else:
             from_name = f"{pickup_contact.first_name} {pickup_contact.last_name}"
+
 
         bill_3p = (
             ship_doc.get("custom_ship_on_third_party") in (1, "1", True, "Yes")
@@ -173,8 +179,8 @@ class EasyPostUtils:
         # ------------------------------------------------------------------
         shipment: Dict[str, Any] = {
             "to_address": {
-                "name":    attention,  # ← Updated: use computed attention
-                "company": company,    # ← Added: use computed company
+                "name":    f"{delivery_contact.first_name} {delivery_contact.last_name}",
+                **({"company": delivery_company} if delivery_company else {}),
                 "street1": delivery_address.address_line1,
                 "street2": delivery_address.address_line2,
                 "city":    delivery_address.city,
@@ -185,6 +191,7 @@ class EasyPostUtils:
             },
             "from_address": {
                 "name":    from_name,
+                **({"company": from_name} if ship_doc.pickup_from_type == "Company" else {}),
                 "street1": pickup_address.address_line1,
                 "street2": pickup_address.address_line2,
                 "city":    pickup_address.city,
@@ -323,10 +330,7 @@ class EasyPostUtils:
     # =========================================================================
     # PURCHASE LABELS (EasyPost or UPSDirect)
     # =========================================================================
-    def create_shipment(self, service_info, delivery_address, shipment_name=None):
-        # Load ship_doc if provided (for attention/company computation)
-        ship_doc = frappe.get_doc("Shipment", shipment_name) if shipment_name else None
-
+    def create_shipment(self, service_info, delivery_address):
         # ─────────────────────────────────────────────────────────────────
         # Custom UPS purchase flow
         # ─────────────────────────────────────────────────────────────────
@@ -346,6 +350,7 @@ class EasyPostUtils:
                 f"https://api.easypost.com/v2/orders/{service_info['order_id']}",
                 auth=(self.api_key, ""),
             ).json()
+            #frappe.log_error("EZP Order detail", json.dumps(rate_check)[:200000])
             
             resp = requests.post(
                 f"https://api.easypost.com/v2/orders/{service_info['order_id']}/buy",
@@ -396,20 +401,11 @@ class EasyPostUtils:
         if (service_info.get("service_provider") or "").upper() == "UPS":
             ups = UPSDirect()
             try:
-                # Rebuild to_address with computed attention/company (from service_info, but override name/company)
-                if ship_doc:
-                    attention, company = self._get_attention_and_company(ship_doc, frappe._dict())  # Empty dict as fallback contact
-                    to_address = service_info.to_address.copy()
-                    to_address["name"] = attention
-                    to_address["company"] = company
-                else:
-                    to_address = service_info.to_address  # Fallback if no ship_doc
-
                 resp = ups.ship(
                     service_info.ups_shipper_number,
                     service_info.ups_account,
                     service_info.ups_postal_code,
-                    to_address,  # ← Updated: uses rebuilt to_address with company
+                    service_info.to_address,
                     service_info.from_address,
                     service_info.parcels,
                     service_info.service_id,
@@ -500,7 +496,7 @@ class EasyPostUtils:
                 error = response_data["failed_parcels"][0]["errors"]
                 frappe.msgprint(_(f"Error occurred while creating Shipment: {error}"), indicator="orange", alert=True)
             else:
-                # ------------------------------------------------------------------
+                                # ------------------------------------------------------------------
                 # 1 We have a PAID EasyPost Shipment – grab the PNG label
                 # ------------------------------------------------------------------
                 lbl_resp = requests.get(
@@ -786,32 +782,6 @@ class EasyPostUtils:
             or "714-555-0000"     # ← safe dummy; change to whatever you like
         )
 
-    def _get_delivery_company_name(self, ship_doc):
-        """Resolve company name from Shipment doc (copied/adapted from shipping.py)."""
-        if ship_doc.delivery_customer:
-            return frappe.db.get_value("Customer", ship_doc.delivery_customer, "customer_name")
-        if ship_doc.delivery_supplier:
-            return frappe.db.get_value("Supplier", ship_doc.delivery_supplier, "supplier_name")
-        if ship_doc.delivery_company:
-            return frappe.db.get_value("Company", ship_doc.delivery_company, "company_name")
-        return None
 
-    def _get_attention_and_company(self, ship_doc, delivery_contact):
-        """Compute attention (name) and company for to_address based on desired rules."""
-        contact_full = f"{delivery_contact.get('first_name', '')} {delivery_contact.get('last_name', '')}".strip()
-        company_full = self._get_delivery_company_name(ship_doc) or ""
 
-        if not contact_full:
-            attention = company_full or "Receiving Department"
-        else:
-            attention = contact_full
 
-        if attention.lower() == company_full.lower():
-            company = "Receiving Department"
-        else:
-            company = company_full
-
-        if not company:
-            company = "Receiving Department"
-
-        return attention, company

@@ -67,28 +67,27 @@ def get_contact(contact_name):
     return normalize_contact(contact)
 
 # After the existing get_contact function, add:
+
 def normalize_contact(contact):
     if contact is None:
         # Build generic fallback using default Company
         default_company = frappe.defaults.get_user_default("Company")
         company_doc = frappe.get_cached_doc("Company", default_company) if default_company else None
-        fallback = frappe._dict({  # ← Change: Use frappe._dict instead of {}
+        fallback = {
             "first_name": "Receiving",
             "last_name": "Dept",
             "email_id": company_doc.email if company_doc else "",
             "phone": company_doc.phone_no if company_doc else "",
             "mobile_no": "",
             "gender": "",
-        })
+        }
         frappe.log_error("Contact fallback used", "normalize_contact created generic contact")
         return fallback
     
-    # Normalize existing dict (convert to frappe._dict if needed for consistency)
-    if not isinstance(contact, frappe._dict):
-        contact = frappe._dict(contact)
-    
-    if not contact.get("first_name") and not contact.get("last_name"):
+    # Normalize existing dict
+    if not contact.get("first_name"):
         contact["first_name"] = "Receiving"
+    if not contact.get("last_name"):
         contact["last_name"] = "Dept"
     if not contact.get("phone") and contact.get("mobile_no"):
         contact["phone"] = contact["mobile_no"]
@@ -157,3 +156,5 @@ def update_tracking_info_daily():
             shipment_doc.shipment_id,
             delivery_notes_list,
         )
+
+

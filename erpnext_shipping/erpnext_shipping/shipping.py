@@ -281,8 +281,7 @@ def create_shipment(
         easypost = EasyPostUtils()
         shipment_info = easypost.create_shipment(
             service_info=service_info,
-            delivery_address=delivery_address,
-            shipment_name=shipment.name  # ← Added: pass ERPNext Shipment name for logic
+            delivery_address=delivery_address
         )
 
     if shipment_info:
@@ -557,3 +556,5 @@ def update_delivery_note(delivery_notes, shipment_info=None, tracking_info=None)
             dl_doc.db_set("tracking_url", tracking_info.get("tracking_url"))
             dl_doc.db_set("tracking_status", tracking_info.get("tracking_status"))
             dl_doc.db_set("tracking_status_info", tracking_info.get("tracking_status_info"))
+
+
