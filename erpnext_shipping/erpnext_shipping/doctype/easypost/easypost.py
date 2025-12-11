@@ -135,20 +135,24 @@ class EasyPostUtils:
         if not ship_doc:
             frappe.throw(_("Could not locate parent Shipment for delivery address"))
 
-        # Fetch receiver company name if conditions met
-        delivery_company = None
-        if ship_doc.delivery_customer and ship_doc.delivery_customer != ship_doc.delivery_contact_name:
-            delivery_company = (
-                frappe.db.get_value("Customer", ship_doc.delivery_customer, "customer_name")
-                or ship_doc.delivery_customer  # Fallback to link value if no customer_name
-            )
-
+        # Fetch receiver details using centralized helper
+        delivery_company = None  # No longer needed directly; helper handles it
+        contact_full = f"{delivery_contact.first_name or ''} {delivery_contact.last_name or ''}".strip()  # Temp for backward compat if needed, but helper recomputes
+        to_address = self._build_address_dict(ship_doc, delivery_contact, delivery_address, is_to_address=True)
+        
         # Determine from_name: use company name if pickup_from_type is "Company", else fallback to contact name
+        from_contact_full = f"{pickup_contact.first_name or ''} {pickup_contact.last_name or ''}".strip()
+        from_company = None
         if ship_doc.pickup_from_type == "Company" and ship_doc.pickup_company:
-            from_name = frappe.db.get_value("Company", ship_doc.pickup_company, "company_name") or "Shipping Dept"
-        else:
-            from_name = f"{pickup_contact.first_name} {pickup_contact.last_name}"
+            from_company = frappe.db.get_value("Company", ship_doc.pickup_company, "company_name") or "Shipping Dept"
 
+        from_address = self._build_address_dict(ship_doc, pickup_contact, pickup_address, is_to_address=False)
+        # Override with from-specific logic if needed (e.g., if no distinct customer/contact for from)
+        from_address["name"] = from_contact_full if not from_company else None
+        from_address["company"] = from_company if from_company else from_contact_full if not from_contact_full else None
+
+        if pickup_contact.email_id:
+            from_address["email"] = pickup_contact.email_id
 
         bill_3p = (
             ship_doc.get("custom_ship_on_third_party") in (1, "1", True, "Yes")
@@ -157,7 +161,7 @@ class EasyPostUtils:
         acct_3p     = ship_doc.custom_third_party_account          # may be None
         clean_acct  = re.sub(r"[^A-Za-z0-9]", "", acct_3p or "")
         zip_3p   = ship_doc.custom_third_party_postal
-        
+                
         if bill_3p and len(clean_acct) == 6:          
             if not (acct_3p and zip_3p):
                 frappe.throw(_("Please fill Customer Account # and Billing ZIP for third‑party billing."))
@@ -178,28 +182,8 @@ class EasyPostUtils:
         # Compose EasyPost shipment payload
         # ------------------------------------------------------------------
         shipment: Dict[str, Any] = {
-            "to_address": {
-                "name":    f"{delivery_contact.first_name} {delivery_contact.last_name}",
-                **({"company": delivery_company} if delivery_company else {}),
-                "street1": delivery_address.address_line1,
-                "street2": delivery_address.address_line2,
-                "city":    delivery_address.city,
-                "state":   delivery_address.state,
-                "zip":     delivery_address.pincode,
-                "country": delivery_address.country,
-                "phone":   self._phone(delivery_contact, delivery_address),
-            },
-            "from_address": {
-                "name":    from_name,
-                **({"company": from_name} if ship_doc.pickup_from_type == "Company" else {}),
-                "street1": pickup_address.address_line1,
-                "street2": pickup_address.address_line2,
-                "city":    pickup_address.city,
-                "state":   pickup_address.state,
-                "zip":     pickup_address.pincode,
-                "country": pickup_address.country,
-                "phone":   self._phone(pickup_contact, pickup_address),
-            },
+            "to_address": to_address,
+            "from_address": from_address,
             **parcel_block,           # ← single or multi‑piece
             "options": {
                 "currency": self.currency,
@@ -321,7 +305,7 @@ class EasyPostUtils:
                     s for s in available_services
                     if (s.get("carrier_code") or "").upper() != "FEDEX"
                 ]
-    
+
             return available_services
 
         except Exception:
@@ -782,6 +766,43 @@ class EasyPostUtils:
             or "714-555-0000"     # ← safe dummy; change to whatever you like
         )
 
-
-
-
+    def _build_address_dict(self, ship_doc, contact, address, is_to_address=True):
+        """
+        Centralized logic to build address dict with proper name/company handling.
+        - If delivery_customer == delivery_contact_name (or no customer): name=contact_full, company=None (individual).
+        - If distinct: name=contact_full, company=customer_name (commercial with attention).
+        - If company but no contact: name="Receiving Dept".
+        """
+        contact_full = f"{contact.first_name or ''} {contact.last_name or ''}".strip()
+        company_name = None
+        
+        field_prefix = "delivery_" if is_to_address else "pickup_"
+        customer_field = f"{field_prefix}customer"
+        contact_name_field = f"{field_prefix}contact_name"
+        
+        if getattr(ship_doc, customer_field, None):
+            customer = getattr(ship_doc, customer_field)
+            contact_name = getattr(ship_doc, contact_name_field, "")
+            customer_db_name = frappe.db.get_value("Customer", customer, "customer_name") or customer
+            
+            if customer_db_name != contact_name:
+                company_name = customer_db_name
+        
+        if company_name and not contact_full.strip():
+            contact_full = "Receiving Dept"
+        
+        addr_dict = {
+            "name": contact_full if contact_full else None,
+            "company": company_name,
+            "street1": address.address_line1,
+            "street2": address.address_line2,
+            "city": address.city,
+            "state": address.state,
+            "zip": address.pincode,
+            "country": address.country,
+            "phone": self._phone(contact, address),
+        }
+        if contact.email_id:
+            addr_dict["email"] = contact.email_id
+        
+        return addr_dict

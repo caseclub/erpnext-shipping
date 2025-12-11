@@ -327,25 +327,29 @@ class UPSDirect:
 
 
     def _party(self, person_or_co: str, addr: dict) -> dict:
+        # Fallback if no contact but company present
+        if addr.get("company") and not person_or_co:
+            person_or_co = "Receiving Dept"
+
         # Base block
         if addr.get("company"):  # commercial address
             block = {
-                "Name":          addr.get("company") or person_or_co,  # Use "Name" to match REST API; company if available, fallback to name
-                "Address":       self._address(addr)["Address"],
+                "Name": addr.get("company") or person_or_co or "Unknown Company",
+                "Address": self._address(addr)["Address"],
             }
             # Add AttentionName only if it's different from Name
             if person_or_co and person_or_co != block["Name"]:
                 block["AttentionName"] = person_or_co
         else:  # residential / individual – UPS wants Name
             block = {
-                "Name":    addr.get("company") or person_or_co,
+                "Name": addr.get("company") or person_or_co or "Unknown Recipient",
                 "Address": self._address(addr)["Address"],
             }
-            # Add AttentionName only if it's different from Name
+            # Add AttentionName only if it's different from Name (rare here)
             if person_or_co and person_or_co != block["Name"]:
                 block["AttentionName"] = person_or_co
 
-        # Inject phone when valid
+        # Inject phone when valid (unchanged, but ensures it's not misplaced)
         phone_block = self._phone(addr.get("phone"))
         if phone_block:
             block.update(phone_block)
