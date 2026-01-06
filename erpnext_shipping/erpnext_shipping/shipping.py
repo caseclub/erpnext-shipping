@@ -279,10 +279,11 @@ def create_shipment(
             service_info = frappe._dict(service_info)
 
         easypost = EasyPostUtils()
-        shipment_info = easypost.create_shipment(
-            service_info=service_info,
-            delivery_address=delivery_address
-        )
+        shipment_info = easypost.create_shipment(service_info=service_info)
+
+    if service_info.get("service_provider") == "FedEx":
+        easypost = EasyPostUtils()  # Reuse for common utils if needed
+        shipment_info = easypost.create_shipment(service_info=service_info)
 
     if shipment_info:
         shipment = frappe.get_doc("Shipment", shipment)
@@ -370,6 +371,16 @@ def print_shipping_label(shipment: str):
                 )
             except Exception:
                 pass
+    elif service_provider == "FedEx":
+        # Use the URL saved on create_shipment
+        shipping_label = shipment_doc.get("custom_shipping_label")
+        # Fallback to JSON blob
+        if (not shipping_label) and shipment_doc.get("custom_postage_label"):
+            try:
+                pl = json.loads(shipment_doc.custom_postage_label)
+                shipping_label = pl.get("label_url") or pl.get("label_png_url")
+            except Exception:
+                pass
     else:
         frappe.throw(_("Unsupported service provider for label printing: {0}").format(service_provider))
 
@@ -403,7 +414,9 @@ def net_print_shipping_label(shipment: str, printer_setting: str):
         # Use the URL we saved on create_shipment
         shipping_label_url = shipment_doc.get("custom_shipping_label")
         is_byte_data = False
-
+    elif service_provider == "FedEx":
+        shipping_label_url = shipment_doc.get("custom_shipping_label")
+        is_byte_data = False
 
     if not shipping_label_url:
         frappe.throw(_("No shipping label found for shipment ID: {0}").format(shipment_id))
@@ -420,6 +433,7 @@ def net_print_shipping_label(shipment: str, printer_setting: str):
 def print_label_from_url(label: str, printer_setting: str, is_byte_data: bool, shipment: str):
 # Downloads a file from a URL and sends it to the configured network printer.
     import cups
+    import shutil  # For copying local files
 
     # Fetch EasyPost settings
     easypost_settings = frappe.get_single("Shipping Settings")
@@ -442,16 +456,27 @@ def print_label_from_url(label: str, printer_setting: str, is_byte_data: bool, s
         label_content = label
         label_filename = f"label_{shipment}.pdf"
 
-    # otherwise, proceed with downloading first
+    # otherwise, proceed with downloading or reading locally
     else:
-        try:
-            # Download the label from the URL
-            response = requests.get(label)
-            response.raise_for_status()
+        site_url = frappe.utils.get_url().rstrip("/")  # e.g. "https://erp.caseclub.com"
+        internal_prefix = f"{site_url}/private/files/"
 
-            # store the content and set the filename
-            label_content = response.content
-            label_filename = label
+        try:
+            if label.startswith(internal_prefix):
+                # Local private file: read directly from filesystem
+                relative_path = label[len(site_url):]  # e.g. "/private/files/fname.zpl"
+                fname = os.path.basename(relative_path)
+                local_source_path = os.path.join(get_files_path(is_private=True), fname)
+                if not os.path.exists(local_source_path):
+                    frappe.throw(_("Local label file not found: {0}").format(local_source_path))
+                label_filename = fname
+                label_content = open(local_source_path, "rb").read()  # Read as bytes
+            else:
+                # Remote URL: download via HTTP
+                response = requests.get(label)
+                response.raise_for_status()
+                label_filename = label
+                label_content = response.content
 
         except requests.exceptions.RequestException as e:
             frappe.throw(_("Failed to download the label: {0}").format(e))
@@ -460,7 +485,7 @@ def print_label_from_url(label: str, printer_setting: str, is_byte_data: bool, s
         except Exception as e:
             frappe.throw(_("An error occurred while printing: {0}").format(e))
 
-    # Save the label locally
+    # Save the label locally to /tmp
     file_name = os.path.basename(label_filename)
     local_path = os.path.join("/tmp", file_name)
     with open(local_path, "wb") as f:
@@ -507,6 +532,14 @@ def update_tracking(shipment, service_provider, shipment_id, delivery_notes=None
     elif service_provider == EASYPOST_PROVIDER:
         easypost = EasyPostUtils()
         tracking_data = easypost.get_tracking_data(shipment_id)
+    elif service_provider == "FedEx":
+        from erpnext_shipping.erpnext_shipping.doctype.easypost.fedex_direct import FedExDirect  # Import here to avoid circular issues
+        fedex = FedExDirect()
+        tracking_data = fedex.get_tracking_data(shipment_id)
+    elif service_provider == "UPS":
+        from erpnext_shipping.erpnext_shipping.doctype.easypost.ups_direct import UPSDirect
+        ups = UPSDirect()
+        tracking_data = ups.get_tracking_data(shipment_id)
 
     if not tracking_data:
         return
@@ -557,4 +590,42 @@ def update_delivery_note(delivery_notes, shipment_info=None, tracking_info=None)
             dl_doc.db_set("tracking_status", tracking_info.get("tracking_status"))
             dl_doc.db_set("tracking_status_info", tracking_info.get("tracking_status_info"))
 
+@frappe.whitelist()
+def get_shipment_zpl(shipment: str):
+    """
+    Returns the ZPL string for a Shipment.
+    Assumes you already saved a .zpl File attachment to the Shipment.
+    """
+    if not shipment:
+        frappe.throw("Missing shipment")
 
+    # Find latest .zpl attached to this Shipment
+    file_doc = frappe.get_all(
+        "File",
+        filters={
+            "attached_to_doctype": "Shipment",
+            "attached_to_name": shipment,
+            "file_name": ["like", "%.zpl"],
+        },
+        fields=["name", "file_name"],
+        order_by="creation desc",
+        limit=1,
+    )
+
+    if not file_doc:
+        frappe.throw(f"No .zpl attachment found for Shipment {shipment}")
+
+    f = frappe.get_doc("File", file_doc[0].name)
+
+    # Get file content. `get_content()` reads from file system/private files as needed.
+    zpl = f.get_content()
+    if isinstance(zpl, bytes):
+        zpl = zpl.decode("utf-8", errors="replace")
+
+    if not zpl or "^XA" not in zpl:
+        frappe.throw("ZPL content looks empty or invalid")
+
+    return {
+        "file_name": f.file_name,
+        "zpl": zpl
+    }

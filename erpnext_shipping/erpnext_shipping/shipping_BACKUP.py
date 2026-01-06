@@ -1,5 +1,6 @@
 # Copyright (c) 2020, Frappe Technologies and contributors
 # For license information, please see license.txt
+#/apps/erpnext_shipping/erpnext_shipping/erpnext_shipping
 import base64
 import uuid
 import json
@@ -18,6 +19,7 @@ from erpnext_shipping.erpnext_shipping.utils import (
     get_address,
     get_contact,
     match_parcel_service_type_carrier,
+    normalize_contact,
 )
 
 from erpnext_shipping.erpnext_shipping.doctype.easypost.easypost import EASYPOST_PROVIDER, EasyPostUtils
@@ -52,10 +54,18 @@ def fetch_shipping_rates(
         if pickup_from_type != "Company":
             pickup_contact = get_contact(pickup_contact_name)
         else:
-            pickup_contact = get_company_contact(user=pickup_contact_name)
-            pickup_contact.email_id = pickup_contact.pop("email", None)
+            user = pickup_contact_name if frappe.db.exists("User", pickup_contact_name) else None
+            pickup_contact = normalize_contact(get_company_contact(user=user))
+            if pickup_contact:
+                pickup_contact["email_id"] = pickup_contact.pop("email", None)
 
-        delivery_contact = get_contact(delivery_contact_name)
+        if delivery_to_type != "Company":
+            delivery_contact = get_contact(delivery_contact_name)
+        else:
+            user = delivery_contact_name if frappe.db.exists("User", delivery_contact_name) else None
+            delivery_contact = normalize_contact(get_company_contact(user=user))
+            if delivery_contact:
+                delivery_contact["email_id"] = delivery_contact.pop("email", None)
 
         letmeship = get_letmeship_utils()
         letmeship_prices = (
@@ -83,22 +93,24 @@ def fetch_shipping_rates(
         sendcloud_prices = match_parcel_service_type_carrier(sendcloud_prices, "carrier", "service_name")
         shipment_prices += sendcloud_prices
 
-    if easypost_enabled and len(parcels) == 1:
+    if easypost_enabled:
         pickup_contact = None
         delivery_contact = None
         if pickup_from_type != "Company":
             pickup_contact = get_contact(pickup_contact_name)
         else:
-            pickup_contact = get_company_contact(user=pickup_contact_name)
-            pickup_contact.email_id = pickup_contact.pop("email", None)
+            user = pickup_contact_name if frappe.db.exists("User", pickup_contact_name) else None
+            pickup_contact = normalize_contact(get_company_contact(user=user))
+            if pickup_contact:
+                pickup_contact["email_id"] = pickup_contact.pop("email", None)
 
-        # if delivery_to_type != "Company":
-        #     delivery_contact = get_contact(delivery_contact_name)
-        # else:
-        #     delivery_contact = get_company_contact(user=pickup_contact_name)
-        #     delivery_contact.email_id = delivery_contact.pop("email", None)
-
-        delivery_contact = get_contact(delivery_contact_name)
+        if delivery_to_type != "Company":
+            delivery_contact = get_contact(delivery_contact_name)
+        else:
+            user = delivery_contact_name if frappe.db.exists("User", delivery_contact_name) else None
+            delivery_contact = normalize_contact(get_company_contact(user=user))
+            if delivery_contact:
+                delivery_contact["email_id"] = delivery_contact.pop("email", None)
 
         easypost = EasyPostUtils()
         easypost_prices = (
@@ -214,14 +226,23 @@ def create_shipment(
     delivery_address = get_address(delivery_address_name)
     delivery_company_name = get_delivery_company_name(shipment)
 
+    pickup_contact = None
     if pickup_from_type != "Company":
         pickup_contact = get_contact(pickup_contact_name)
-
     else:
-        pickup_contact = get_company_contact(user=pickup_contact_name)
-        pickup_contact.email_id = pickup_contact.pop("email", None)
+        user = pickup_contact_name if frappe.db.exists("User", pickup_contact_name) else None
+        pickup_contact = normalize_contact(get_company_contact(user=user))
+        if pickup_contact:
+            pickup_contact["email_id"] = pickup_contact.pop("email", None)
 
-    delivery_contact = get_contact(delivery_contact_name)
+    delivery_contact = None
+    if delivery_to_type != "Company":
+        delivery_contact = get_contact(delivery_contact_name)
+    else:
+        user = delivery_contact_name if frappe.db.exists("User", delivery_contact_name) else None
+        delivery_contact = normalize_contact(get_company_contact(user=user))
+        if delivery_contact:
+            delivery_contact["email_id"] = delivery_contact.pop("email", None)
 
     if service_info["service_provider"] == LETMESHIP_PROVIDER:
         letmeship = get_letmeship_utils()
@@ -263,6 +284,13 @@ def create_shipment(
             delivery_address=delivery_address
         )
 
+    if service_info.get("service_provider") == "FedEx":
+        easypost = EasyPostUtils()  # Reuse for common utils if needed
+        shipment_info = easypost.create_shipment(  # This will now route to FedExDirect internally
+            service_info=service_info,
+            delivery_address=delivery_address
+        )
+
     if shipment_info:
         shipment = frappe.get_doc("Shipment", shipment)
         shipment.db_set(
@@ -292,8 +320,12 @@ def create_shipment(
             except frappe.DoesNotExistError:
                 pass
 
-                if delivery_notes:
-                    update_delivery_note(delivery_notes=delivery_notes, shipment_info=shipment_info)
+        # FETCH delivery_notes from Shipment child table if not provided/empty
+        if not delivery_notes:
+            delivery_notes = [row.delivery_note for row in shipment.get("shipment_delivery_note") or [] if row.delivery_note]
+
+        if delivery_notes:
+            update_delivery_note(delivery_notes=delivery_notes, shipment_info=shipment_info)
 
     return shipment_info
 
@@ -335,7 +367,7 @@ def print_shipping_label(shipment: str):
         # 1) try direct URL saved earlier
         shipping_label = shipment_doc.get("custom_shipping_label")
 
-        # 2) fall back to extracting from the JSON blob (in case the first save failed)
+        # 2) fallback to extracting from the JSON blob (in case the first save failed)
         if (not shipping_label) and shipment_doc.get("custom_postage_label"):
             try:
                 pl = json.loads(shipment_doc.custom_postage_label)
@@ -345,6 +377,18 @@ def print_shipping_label(shipment: str):
                 )
             except Exception:
                 pass
+    elif service_provider == "FedEx":
+        # Use the URL saved on create_shipment
+        shipping_label = shipment_doc.get("custom_shipping_label")
+        # Fallback to JSON blob
+        if (not shipping_label) and shipment_doc.get("custom_postage_label"):
+            try:
+                pl = json.loads(shipment_doc.custom_postage_label)
+                shipping_label = pl.get("label_url") or pl.get("label_png_url")
+            except Exception:
+                pass
+    else:
+        frappe.throw(_("Unsupported service provider for label printing: {0}").format(service_provider))
 
 
     return shipping_label
@@ -376,7 +420,9 @@ def net_print_shipping_label(shipment: str, printer_setting: str):
         # Use the URL we saved on create_shipment
         shipping_label_url = shipment_doc.get("custom_shipping_label")
         is_byte_data = False
-
+    elif service_provider == "FedEx":
+        shipping_label_url = shipment_doc.get("custom_shipping_label")
+        is_byte_data = False
 
     if not shipping_label_url:
         frappe.throw(_("No shipping label found for shipment ID: {0}").format(shipment_id))
@@ -480,12 +526,20 @@ def update_tracking(shipment, service_provider, shipment_id, delivery_notes=None
     elif service_provider == EASYPOST_PROVIDER:
         easypost = EasyPostUtils()
         tracking_data = easypost.get_tracking_data(shipment_id)
+    elif service_provider == "FedEx":
+        from erpnext_shipping.erpnext_shipping.doctype.easypost.fedex_direct import FedExDirect  # Import here to avoid circular issues
+        fedex = FedExDirect()
+        tracking_data = fedex.get_tracking_data(shipment_id)
+    elif service_provider == "UPS":
+        from erpnext_shipping.erpnext_shipping.doctype.easypost.ups_direct import UPSDirect
+        ups = UPSDirect()
+        tracking_data = ups.get_tracking_data(shipment_id)
 
     if not tracking_data:
         return
 
-    shipment = frappe.get_doc("Shipment", shipment)
-    shipment.db_set(
+    shipment_doc = frappe.get_doc("Shipment", shipment)  # Renamed for clarity
+    shipment_doc.db_set(
         {
             "awb_number": tracking_data.get("awb_number"),
             "tracking_status": tracking_data.get("tracking_status"),
@@ -494,8 +548,20 @@ def update_tracking(shipment, service_provider, shipment_id, delivery_notes=None
         }
     )
 
+    # FETCH delivery_notes from Shipment child table if not provided/empty
+    if not delivery_notes:
+        delivery_notes = [row.delivery_note for row in shipment_doc.get("shipment_delivery_note") or [] if row.delivery_note]
+
+    # CONSTRUCT minimal shipment_info from Shipment doc (fallback)
+    shipment_info = None
+    if delivery_notes:  # Only build if we'll use it
+        shipment_info = {
+            "carrier": shipment_doc.carrier,
+            "carrier_service": shipment_doc.carrier_service,
+        }
+
     if delivery_notes:
-        update_delivery_note(delivery_notes=delivery_notes, tracking_info=tracking_data)
+        update_delivery_note(delivery_notes=delivery_notes, shipment_info=shipment_info, tracking_info=tracking_data)
 
 
 def update_delivery_note(delivery_notes, shipment_info=None, tracking_info=None):
@@ -517,3 +583,5 @@ def update_delivery_note(delivery_notes, shipment_info=None, tracking_info=None)
             dl_doc.db_set("tracking_url", tracking_info.get("tracking_url"))
             dl_doc.db_set("tracking_status", tracking_info.get("tracking_status"))
             dl_doc.db_set("tracking_status_info", tracking_info.get("tracking_status_info"))
+
+

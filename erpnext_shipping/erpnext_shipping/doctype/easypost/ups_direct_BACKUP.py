@@ -5,11 +5,6 @@ import frappe
 from frappe.utils.password import get_decrypted_password
 import re
 from requests.exceptions import HTTPError
-import base64
-import uuid
-import os
-from frappe.utils.file_manager import get_files_path
-from frappe import _
 
 # US State Name to Code Mapping (case-insensitive lookup)
 US_STATE_CODES = {
@@ -116,22 +111,7 @@ class UPSDirect:
         "86": "Today Express Saver",
     }
 
-    def _save_label_content(self, content: str, ext: str) -> str:
-        fname = f"{uuid.uuid4()}.{ext}"
-        file_path = os.path.join(get_files_path(is_private=True), fname)
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-
-        file_doc = frappe.get_doc({
-            "doctype": "File",
-            "file_name": fname,
-            "file_url": f"/private/files/{fname}",
-            "is_private": 1,
-        })
-        file_doc.insert(ignore_permissions=True)
-
-        return f"{frappe.utils.get_url()}{file_doc.file_url}"
-        
+    
     def _headers(self) -> dict:
         return {
             "Authorization": f"Bearer {self.token}",
@@ -316,8 +296,7 @@ class UPSDirect:
                     "ShipmentDate": today,
                 },
                 "LabelSpecification": {
-                    "LabelImageFormat": {"Code": "ZPL"},
-                    "LabelStockSize": {"Height": "6", "Width": "4"},
+                    "LabelImageFormat": {"Code": "PNG"},
                     "LabelDelivery":    {"LabelLinkIndicator": "true"}
                 }
             }
@@ -325,77 +304,16 @@ class UPSDirect:
         #print(f"Ship Payload: {body}", flush=True)
         r = requests.post(UPS_SHIP_URL, json=body, headers=self._headers())
         if r.status_code >= 400:
-            frappe.log_error(title=f"UPS {r.status_code} body", message=r.text[:2000] or "(empty)")
+            frappe.log_error(
+                title=f"UPS {r.status_code} body",
+                message=r.text[:2000] or "(empty)"
+            )
             r.raise_for_status()
         
         #print("RAW UPS Ship RESPONSE:", json.dumps(r.json(), indent=2), flush=True)
         
         r.raise_for_status()
-        
-        resp = r.json()
-
-        # Log for debugging (keep existing print if you want)
-        #frappe.log_error("UPS Ship Full Response", json.dumps(resp, indent=2)[:2000])
-
-        shipment_results = resp.get("ShipmentResponse", {}).get("ShipmentResults", {})
-        if not shipment_results:
-            frappe.throw("UPS response contains no ShipmentResults.")
-
-        tracking_numbers = []
-        label_contents = []
-
-        package_results = shipment_results.get("PackageResults", [])
-        if isinstance(package_results, dict):
-            package_results = [package_results]
-
-        for pr in package_results:
-            tn = pr.get("TrackingNumber")
-            if tn:
-                tracking_numbers.append(tn)
-
-            # Extract ZPL
-            shipping_label = pr.get("ShippingLabel", {})
-            graphic = shipping_label.get("GraphicImage")
-            if graphic:
-                try:
-                    label_bytes = base64.b64decode(graphic)
-                    label_content = label_bytes.decode('cp1252')
-                    label_contents.append(label_content)
-                except Exception as e:
-                    frappe.log_error("UPS ZPL Processing Error", str(e))
-                    frappe.throw(_("Failed to process UPS ZPL label: {0}").format(str(e)))
-
-        if not label_contents:
-            frappe.throw(_("UPS did not return any label content."))
-
-        combined_content = ''.join(label_contents)
-        local_url = self._save_label_content(combined_content, 'zpl')
-        label_urls = [local_url]
-
-        shipment_id = shipment_results.get("ShipmentIdentificationNumber") or (tracking_numbers[0] if tracking_numbers else None)
-        if not shipment_id:
-            frappe.log_error("UPS ship response missing shipment ID/tracking", json.dumps(resp)[:2000])
-            frappe.throw("UPS response missing valid shipment ID or tracking number.")
-
-        # Extract amount
-        shipment_charges = shipment_results.get("ShipmentCharges", {})
-        total_charges = shipment_charges.get("TotalCharges", {}).get("MonetaryValue", 0.0)
-        shipment_amount = float(total_charges)
-        if shipment_amount == 0.0:
-            frappe.log_error("UPS ship amount is 0.0", "Possible missing charge data in response; using fallback 0.0")
-
-        awb_number = ", ".join(tracking_numbers) if tracking_numbers else ""
-
-        return {
-            "service_provider": "UPS",
-            "shipment_id": shipment_id,
-            "carrier": "UPS",
-            "carrier_service": self.SERVICE_MAP.get(service_code, service_code),
-            "shipment_amount": shipment_amount,
-            "awb_number": awb_number,
-            "label_bundle": label_urls,
-            "shipping_label": local_url,
-        }
+        return r.json()
     
     # ---------- track ----------
     def get_tracking_data(self, tracking_number: str) -> dict:

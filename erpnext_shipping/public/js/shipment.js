@@ -2,6 +2,179 @@
 // For license information, please see license.txt
 ///apps/erpnext_shipping/erpnext_shipping/public/js
 
+/* ── Targeted debug helpers ─────────────────────────────────────── */
+const DEBUG_PREFIX = "[ZBP-PRINT][Shipment]";
+function log(...args) { console.log(DEBUG_PREFIX, ...args); } // only for problem-area logs
+function warn(...args) { console.warn(DEBUG_PREFIX, ...args); }
+function err(...args) { console.error(DEBUG_PREFIX, ...args); }
+/* ── Utility: timeout wrapper ───────────────────────────────────── */
+function withTimeout(promise, ms, label) {
+    let t;
+    const timeout = new Promise((_, reject) => {
+        t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+}
+/* ── Load BrowserPrint.js from ERPNext assets (local, no CDN) ───── */
+async function ensureBrowserPrintLoaded() {
+    log("ensureBrowserPrintLoaded: START");
+    if (window.BrowserPrint) {
+        log("ensureBrowserPrintLoaded: BrowserPrint already loaded");
+        return;
+    }
+    const baseUrl = "/assets/workflow_automation/js/BrowserPrint.js";
+    const url = `${baseUrl}?v=${Date.now()}`; // cache-bust
+    await new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = url;
+        s.async = true;
+        s.onload = () => {
+            if (window.BrowserPrint) {
+                log("ensureBrowserPrintLoaded: loaded OK", baseUrl);
+                resolve();
+            } else {
+                reject(new Error("BrowserPrint.js loaded but window.BrowserPrint is still undefined"));
+            }
+        };
+        s.onerror = (e) => {
+            err("ensureBrowserPrintLoaded: FAILED to load", baseUrl, e);
+            reject(e);
+        };
+        document.head.appendChild(s);
+        log("ensureBrowserPrintLoaded: injected", baseUrl);
+    });
+    log("ensureBrowserPrintLoaded: END");
+}
+
+/* ── Fetch printer IP from EasyPost (cache in memory) ───────────── */
+let __cc_easypost_printer_ip_cache;
+
+async function getEasyPostPrinterIp() {
+    if (__cc_easypost_printer_ip_cache !== undefined) {
+        return __cc_easypost_printer_ip_cache; // may be null/empty, intentionally cached
+    }
+
+    const r = await frappe.call({
+        method: "frappe.client.get",
+        args: { doctype: "EasyPost" } // assumes EasyPost is a Single DocType
+    });
+
+    const ip = (r?.message?.custom_printer_ip_address || "").trim();
+
+    // Cache even if blank, to avoid repeated server calls
+    __cc_easypost_printer_ip_cache = ip || null;
+
+    log("EasyPost printer IP fetched", { ip: __cc_easypost_printer_ip_cache });
+
+    return __cc_easypost_printer_ip_cache;
+}
+
+
+/* ── Discover and select printer (prefers EasyPost IP) ──────────── */
+async function getZebraPrinter(targetIp) {
+    log("getZebraPrinter: START", { targetIp });
+    await ensureBrowserPrintLoaded();
+
+    if (!window.BrowserPrint) {
+        throw new Error("BrowserPrint library not available.");
+    }
+
+    return withTimeout(new Promise((resolve, reject) => {
+        BrowserPrint.getLocalDevices((devices) => {
+            log("getZebraPrinter: Devices discovered", devices);
+
+            if (!devices || !devices.length) {
+                reject(new Error("No printers discovered via Browser Print."));
+                return;
+            }
+
+            const isZebra = (d) => (d.manufacturer || "").toLowerCase().includes("zebra");
+            const hasZT411Name = (d) => (d.name || "").toLowerCase().includes("zt411");
+
+            let selected = null;
+
+            // 1) Best match: Zebra + ZT411 + UID contains targetIp
+            if (targetIp) {
+                selected = devices.find(d =>
+                    isZebra(d) &&
+                    hasZT411Name(d) &&
+                    d.uid &&
+                    d.uid.includes(targetIp)
+                );
+            }
+
+            // 2) Next: Zebra + ZT411
+            if (!selected) {
+                selected = devices.find(d => isZebra(d) && hasZT411Name(d));
+            }
+
+            // 3) Next: any Zebra
+            if (!selected) {
+                selected = devices.find(d => isZebra(d));
+            }
+
+            if (!selected) {
+                reject(new Error("No matching Zebra printer found (ZT411 preferred)."));
+                return;
+            }
+
+            log("PRINTER SELECTED:", selected.name, selected.uid);
+            resolve(selected);
+        }, reject, "printer");
+    }), 10000, "BrowserPrint.getLocalDevices()");
+}
+
+/* ── Print (logs around discovery and send) ─────────────────────── */
+async function printZPLToPrinter(zpl) {
+    log("printZPLToPrinter: START", { zplLength: zpl?.length || 0 });
+
+    const targetIp = await getEasyPostPrinterIp();
+
+    // If IP is missing, we still proceed (it will fall back to ZT411/Zebra selection)
+    if (!targetIp) {
+        warn("EasyPost custom_printer_ip_address is empty; falling back to ZT411/Zebra selection.");
+    }
+
+    const printer = await getZebraPrinter(targetIp);
+    log("printZPLToPrinter: Printer ready");
+
+    return withTimeout(new Promise((resolve, reject) => {
+        printer.send(zpl, () => {
+            log("printZPLToPrinter: Print succeeded");
+            resolve();
+        }, (e) => {
+            err("printZPLToPrinter: Print failed", e);
+            reject(e);
+        });
+    }), 15000, "printer.send()");
+}
+
+
+async function printThermalLabel(frm) {
+    log("printThermalLabel: START");
+    try {
+        frappe.show_alert({ message: "Fetching ZPL…", indicator: "blue" });
+        const r = await frappe.call({
+            method: "erpnext_shipping.erpnext_shipping.shipping.get_shipment_zpl",
+            args: { shipment: frm.doc.name }
+        });
+        log("Frappe call for ZPL completed", { hasZpl: !!r.message?.zpl });
+        let zpl = r.message?.zpl;
+        if (!zpl) {
+            frappe.msgprint("No ZPL returned for this Shipment.");
+            return;
+        }
+        if (Array.isArray(zpl)) zpl = zpl.join("\n\n");  // Concat multi-labels
+        frappe.show_alert({ message: "Sending to printer…", indicator: "blue" });
+        await printZPLToPrinter(zpl);
+        frappe.show_alert({ message: "Label printed automatically.", indicator: "green" });
+        log("printThermalLabel: END (success)");
+    } catch (e) {
+        err("printThermalLabel: FAILED", e);
+        frappe.msgprint(`Auto-print failed: ${e.message || e}`);
+    }
+}
+
 frappe.ui.form.on("Shipment", {
 	refresh: function (frm) {
 		if (frm.doc.docstatus === 1 && !frm.doc.shipment_id) {
@@ -21,14 +194,6 @@ frappe.ui.form.on("Shipment", {
 		}
 
 		if (frm.doc.shipment_id) {
-			frm.add_custom_button(
-				__("Network Print Label"),
-				function () {
-					net_print_shipping_label(frm.doc.name)
-				},
-			
-					__("Tools")
-			);
 			if (frm.doc.tracking_status != "Delivered") {
 				frm.add_custom_button(
 					__("Update Tracking"),
@@ -300,32 +465,7 @@ frappe.ui.form.on("Shipment", {
 	},
 
 	print_shipping_label: function (frm) {
-		frappe.call({
-			method: "erpnext_shipping.erpnext_shipping.shipping.print_shipping_label",
-			freeze: true,
-			freeze_message: __("Printing Shipping Label"),
-			args: {
-				shipment: frm.doc.name,
-			},
-			callback: function (r) {
-				if (r.message) {
-					if (frm.doc.service_provider == "LetMeShip") {
-						var array = JSON.parse(r.message);
-						// Uint8Array for unsigned bytes
-						array = new Uint8Array(array);
-						const file = new Blob([array], { type: "application/pdf" });
-						const file_url = URL.createObjectURL(file);
-						window.open(file_url);
-					} else {
-						if (Array.isArray(r.message)) {
-							r.message.forEach((url) => window.open(url));
-						} else {
-							window.open(r.message);
-						}
-					}
-				}
-			},
-		});
+		printThermalLabel(frm);
 	},
 
 	update_tracking: function (frm, service_provider, shipment_id) {
@@ -579,24 +719,6 @@ async function net_print_shipping_label(shipment_name) {
 	if (shipping_settings.default_network_printer) {
 		// Default printer exists, skip the dialog
 		print_label(shipping_settings.default_network_printer)
-	} else {
-		// No default printer, show dialog to select printer
-		frappe.prompt(
-			[
-				{
-					label: __("Printer Setting"),
-					fieldname: "printer_setting",
-					fieldtype: "Link",
-					options: "Network Printer Settings",
-					reqd: 1,
-				},
-			],
-			function (values) {
-				print_label(values.printer_setting)
-			},
-			__("Select Printer Setting"),
-			__("Print")
-		);
 	}
 }
 
@@ -683,6 +805,12 @@ async function select_from_available_services(frm, available_services) {
 						title: __("Shipment Created"),
 						indicator: "green",
 					});
+					
+                    // NEW: Automatically print the shipping label(s) using Zebra Browser Print
+                    setTimeout(async () => {  
+                        await printThermalLabel(frm);
+                    }, 500);  // Adjust delay if needed for timing issues					
+				
 					frm.events.update_tracking(
 						frm,
 						r.message.service_provider,
