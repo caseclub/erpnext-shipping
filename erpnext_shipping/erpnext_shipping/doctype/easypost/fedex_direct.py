@@ -375,8 +375,10 @@ class FedExDirect:
             frappe.throw("FedEx response missing valid shipment ID or tracking number.")
 
         shipment_amount = float(shipment_details.get("shipmentRating", {}).get("shipmentRateDetails", [{}])[0].get("totalNetCharge", 0.0))
-        if shipment_amount == 0.0:
-            frappe.log_error("FedEx ship amount is 0.0", "Possible missing charge data in response; using fallback 0.0")
+        
+        # 3rd Party freight returns 0.0 for the dollar amount
+        #if shipment_amount == 0.0:
+        #    frappe.log_error("FedEx ship amount is 0.0", "Possible missing charge data in response; using fallback 0.0")
 
         awb_number = ", ".join(tracking_numbers) if tracking_numbers else ""
 

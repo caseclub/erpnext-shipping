@@ -381,8 +381,10 @@ class UPSDirect:
         shipment_charges = shipment_results.get("ShipmentCharges", {})
         total_charges = shipment_charges.get("TotalCharges", {}).get("MonetaryValue", 0.0)
         shipment_amount = float(total_charges)
-        if shipment_amount == 0.0:
-            frappe.log_error("UPS ship amount is 0.0", "Possible missing charge data in response; using fallback 0.0")
+        
+        # 3rd Party freight returns 0.0 for the dollar amount
+        #if shipment_amount == 0.0:
+        #    frappe.log_error("UPS ship amount is 0.0", "Possible missing charge data in response; using fallback 0.0")
 
         awb_number = ", ".join(tracking_numbers) if tracking_numbers else ""
 
