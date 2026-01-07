@@ -76,8 +76,8 @@ class EasyPostUtils:
     # ──────────────────────────────────────────────────────────────────────
     _DISPLAY_MAP = {
         # ---- Carrier aliases the rest of the code expects ----
-        "FEDEXDEFAULT": "FedEx (Easy Post)",
-        "FEDEX":        "FedEx (Case Club) - TESTING DO NOT USE",
+        "FEDEXDEFAULT": "FedEx",
+        "FEDEX":        "FedEx",
         "UPSDAP":       "UPS",
         "USPS":         "USPS",
         # ---- Service renames (add / edit as you like) ----

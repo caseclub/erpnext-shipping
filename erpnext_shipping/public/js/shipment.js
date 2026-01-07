@@ -806,10 +806,17 @@ async function select_from_available_services(frm, available_services) {
 						indicator: "green",
 					});
 					
-                    // NEW: Automatically print the shipping label(s) using Zebra Browser Print
-                    setTimeout(async () => {  
-                        await printThermalLabel(frm);
-                    }, 500);  // Adjust delay if needed for timing issues					
+					// Automatically print only if Shipment.custom_auto_print_label is checked
+					const should_auto_print = !!frm.doc.custom_auto_print_label;
+
+					if (should_auto_print) {
+						setTimeout(async () => {
+							await printThermalLabel(frm);
+						}, 500); // keep existing delay
+					} else {
+						log("Auto-print skipped (custom_auto_print_label is unchecked).");
+					}
+				
 				
 					frm.events.update_tracking(
 						frm,

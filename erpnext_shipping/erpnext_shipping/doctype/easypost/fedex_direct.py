@@ -63,8 +63,8 @@ def _get_fedex_creds():
     """
     docname = "EasyPost"
     
-    #use_test = frappe.db.get_single_value(docname, "use_test_environment")
-    use_test = True  # Force sandbox for testing
+    use_test = frappe.db.get_single_value(docname, "use_test_environment")
+    #use_test = True  # Force sandbox for testing
     
     if use_test:
         api_key = frappe.db.get_single_value(docname, "custom_fedex_test_api_key")
@@ -105,9 +105,9 @@ class FedExDirect:
         "GROUND_HOME_DELIVERY": "Home Delivery",
         "SMART_POST": "SmartPost",
 
-        "FEDEX_EXPRESS_SAVER": "Express Saver",
-        "FEDEX_2_DAY": "2 Day",
-        "FEDEX_2_DAY_AM": "2 Day AM",
+        "FEDEX_EXPRESS_SAVER": "3-Day",
+        "FEDEX_2_DAY": "2-Day",
+        "FEDEX_2_DAY_AM": "2-Day AM",
 
         "STANDARD_OVERNIGHT": "Standard Overnight",
         "FEDEX_STANDARD_OVERNIGHT_EXTRA_HOURS": "Standard Overnight (Extra Hours)",
@@ -225,6 +225,9 @@ class FedExDirect:
         # (3P applied only in ship; rates for 3P are private/unavailable)
         body = {
             "accountNumber": {"value": shipper_num},
+            "rateRequestControlParameters": {  # NEW: Request transit times in response
+                "returnTransitTimes": True
+            },
             "requestedShipment": {
                 "shipper": self._address(from_addr),
                 "recipient": self._address(to_addr),
@@ -261,8 +264,7 @@ class FedExDirect:
             raise HTTPError(f"FedEx error {r.status_code}: {err}", response=r)
 
         return r.json()
-
-
+    
     # In the calling code (easypost.py get_available_services), the rate response is processed like this:
     # But since you process it there, I've ensured the response is clean. No change needed here for parsing;
     # the parsing fixes are in easypost.py (see below).

@@ -1,43 +1,50 @@
 <!--/apps/erpnext_shipping/erpnext_shipping/public/js-->
 {% if (data.preferred_services.length || data.other_services.length) { %}
 	<div style="overflow-x:scroll;">
-		<h5>{{ __("Preferred Services") }}</h5>
-		{% if (data.preferred_services.length) { %}
-			<table class="table table-bordered table-hover">
-				<thead class="grid-heading-row">
-					<tr>
-						{% for (var i = 0; i < header_columns.length; i++) { %}
-							<th style="padding-left: 12px;">{{ header_columns[i] }}</th>
-						{% } %}
-					</tr>
-				</thead>
-				<tbody>
-					{% for (var i = 0; i < data.preferred_services.length; i++) { %}
-						<tr id="data-preferred-{{i}}">
-							<td class="service-info" style="width:15%;">{{ data.preferred_services[i].service_provider }}</td>
-							<td class="service-info" style="width:15%;">{{ data.preferred_services[i].carrier }}</td>
-							<td class="service-info" style="width:35%;">{{ data.preferred_services[i].service_name }}</td>
-							<td class="service-info" style="width:10%;">{{ data.preferred_services[i].delivery_days || "" }}</td>
-							<td class="service-info" style="width:15%;">{{ format_currency(data.preferred_services[i].total_price, rates_currency, 2) }}</td>
-							<td style="width:10%;vertical-align: middle;">
-								<button
-									data-type="preferred_services"
-									id="data-preferred-{{i}}" type="button" class="btn">
-									{{ __("Buy") }}
-								</button>
-							</td>
+		<!--Disable prefered services option-->
+		{% if (0) { %}
+			<h5>{{ __("Preferred Services") }}</h5>
+			{% if (data.preferred_services.length) { %}
+				<table class="table table-bordered table-hover">
+					<thead class="grid-heading-row">
+						<tr>
+							{% for (var i = 0; i < header_columns.length; i++) { %}
+								<th style="padding-left: 12px;">{{ header_columns[i] }}</th>
+							{% } %}
 						</tr>
-					{% } %}
-				</tbody>
-			</table>
-		{% } else { %}
-			<div style="text-align: center; padding: 10px;">
-				<span class="text-muted">
-					{{ __("No Preferred Services Available") }}
-				</span>
-			</div>
+					</thead>
+					<tbody>
+						{% for (var i = 0; i < data.preferred_services.length; i++) { %}
+							<tr id="data-preferred-{{i}}">
+								<td class="service-info" style="width:15%;">{{ data.preferred_services[i].service_provider }}</td>
+								<td class="service-info" style="width:15%;">{{ data.preferred_services[i].carrier }}</td>
+								<td class="service-info" style="width:35%;">{{ data.preferred_services[i].service_name }}</td>
+								<td class="service-info" style="width:10%;">{{ data.preferred_services[i].delivery_days || "" }}</td>
+								<td class="service-info" style="width:15%;">{{ format_currency(data.preferred_services[i].total_price, rates_currency, 2) }}</td>
+								<td style="width:10%;vertical-align: middle;">
+									<button
+										data-type="preferred_services"
+										id="data-preferred-{{i}}" type="button" class="btn">
+										{{ __("Buy") }}
+									</button>
+								</td>
+							</tr>
+						{% } %}
+					</tbody>
+				</table>
+			{% } else { %}
+				<div style="text-align: center; padding: 10px;">
+					<span class="text-muted">
+						{{ __("No Preferred Services Available") }}
+					</span>
+				</div>
+			{% } %}
 		{% } %}
-		<h5>{{ __("Other Services") }}</h5>
+		<!--Disable header-->
+		{% if (0) { %}
+			<h5>{{ __("Shipping Services") }}</h5>
+		{% } %}
+
 		{% if (data.other_services.length) { %}
 			<table class="table table-bordered table-hover">
 				<thead class="grid-heading-row">
