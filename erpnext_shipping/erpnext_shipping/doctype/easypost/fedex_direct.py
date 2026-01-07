@@ -318,7 +318,7 @@ class FedExDirect:
                 "countryCode": "US"
             }
 
-        frappe.log_error("FedEx Ship Request Body", json.dumps(body, indent=2)[:20000])
+        #frappe.log_error("FedEx Ship Request Body", json.dumps(body, indent=2)[:20000])
 
         r = requests.post(f"{self._base_url}/ship/v1/shipments", json=body, headers=self._headers())
         if r.status_code >= 400:
@@ -329,7 +329,7 @@ class FedExDirect:
             r.raise_for_status()
         
         resp = r.json()
-        frappe.log_error("FedEx Ship Full Response", json.dumps(resp, indent=2)[:2000])
+        #frappe.log_error("FedEx Ship Full Response", json.dumps(resp, indent=2)[:2000])
         
         transaction_shipments = resp.get("output", {}).get("transactionShipments", [])
         if not transaction_shipments:
