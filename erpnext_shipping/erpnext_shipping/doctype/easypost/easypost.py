@@ -750,15 +750,22 @@ class EasyPostUtils:
                 }
 
             # ---------- existing single-parcel logic ----------
-            r = requests.get(f"https://api.easypost.com/v2/shipments/{ep_id}",
-                             auth=(self.api_key, "")).json()
-            t = r["tracker"]
-            return {
-                "awb_number": t["tracking_code"],
-                "tracking_status": t["status"],
-                "tracking_status_info": t["status_detail"],
-                "tracking_url": t["public_url"],
-            }
+            r = requests.get(f"https://api.easypost.com/v2/shipments/{ep_id}", auth=(self.api_key, "")).json()
+            t = r.get("tracker")
+            if t is None:
+                return {
+                    "awb_number": r.get("tracking_code"),
+                    "tracking_status": r.get("status"),
+                    "tracking_status_info": None,
+                    "tracking_url": None,
+                }
+            else:
+                return {
+                    "awb_number": t["tracking_code"],
+                    "tracking_status": t["status"],
+                    "tracking_status_info": t["status_detail"],
+                    "tracking_url": t["public_url"],
+                }
         except Exception:
             show_error_alert("updating EasyPost Shipment")
 
