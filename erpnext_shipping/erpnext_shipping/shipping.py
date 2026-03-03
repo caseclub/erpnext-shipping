@@ -320,6 +320,23 @@ def create_shipment(
 
         if delivery_notes:
             update_delivery_note(delivery_notes=delivery_notes, shipment_info=shipment_info)
+            
+        # === ENQUEUE CUSTOMER SHIPPING NOTIFICATION ===
+        # After shipment is successfully created (EasyPost/UPS/etc. API call) and
+        # update_delivery_note has populated the Delivery Note with tracking info.
+        # Reads shipment_delivery_note child table → Delivery Note.custom_sales_order → Customer Notification
+        try:
+            frappe.enqueue(
+                "workflow_automation.custom_scripts.customer_notification.process_shipping_notification",
+                shipment_name=shipment.name,
+                queue="default",
+                timeout=180,
+                is_async=True,
+                enqueue_after_commit=True
+            )
+        except Exception as enq_err:
+            # Non-critical – don't let notification failure break shipment creation
+            frappe.log_error(title="Enqueue Shipping Notification Failed", message=str(enq_err))
 
     return shipment_info
 
@@ -581,8 +598,16 @@ def update_delivery_note(delivery_notes, shipment_info=None, tracking_info=None)
     for delivery_note in delivery_notes:
         dl_doc = frappe.get_doc("Delivery Note", delivery_note)
         if shipment_info:
+            # Normalize carrier display on Delivery Note (e.g. usps -> USPS, ups -> UPS)
+            raw_carrier = (shipment_info.get("carrier") or "").strip()
+            carrier_key = raw_carrier.upper()
+            if carrier_key == "USPS": carrier_label = "USPS"
+            elif carrier_key == "UPS": carrier_label = "UPS"
+            elif carrier_key == "FEDEX": carrier_label = "FedEx"
+            else: carrier_label = raw_carrier
+
             dl_doc.db_set("delivery_type", "Parcel Service")
-            dl_doc.db_set("parcel_service", shipment_info.get("carrier"))
+            dl_doc.db_set("parcel_service", carrier_label)
             dl_doc.db_set("parcel_service_type", shipment_info.get("carrier_service"))
         if tracking_info:
             dl_doc.db_set("tracking_number", tracking_info.get("awb_number"))
