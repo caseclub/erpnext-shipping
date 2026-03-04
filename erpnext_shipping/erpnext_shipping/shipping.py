@@ -295,9 +295,20 @@ def create_shipment(
                 "shipment_id": shipment_info.get("shipment_id"),
                 "shipment_amount": shipment_info.get("shipment_amount"),
                 "awb_number": shipment_info.get("awb_number"),
+                "tracking_url": shipment_info.get("tracking_url"),  # many providers return this at label purchase
                 "status": "Booked",
             }
         )
+        
+        # === PROPAGATE TRACKING INFO TO DELIVERY NOTE IMMEDIATELY ===
+        # This eliminates the race condition that caused "N/A" in the email.
+        tracking_info = None
+        if shipment_info.get("awb_number") or shipment_info.get("tracking_url"):
+            tracking_info = {
+                "awb_number": shipment_info.get("awb_number"),
+                "tracking_url": shipment_info.get("tracking_url"),
+            }
+
         # ------------------------------------------------------------------
         # Save custom UPS label info so the UI buttons have something to open
         # ------------------------------------------------------------------
@@ -319,7 +330,11 @@ def create_shipment(
             delivery_notes = [row.delivery_note for row in shipment.get("shipment_delivery_note") or [] if row.delivery_note]
 
         if delivery_notes:
-            update_delivery_note(delivery_notes=delivery_notes, shipment_info=shipment_info)
+            update_delivery_note(
+                delivery_notes=delivery_notes,
+                shipment_info=shipment_info,
+                tracking_info=tracking_info
+            )
             
         # === ENQUEUE CUSTOMER SHIPPING NOTIFICATION ===
         # After shipment is successfully created (EasyPost/UPS/etc. API call) and
