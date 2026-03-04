@@ -70,6 +70,29 @@ class EasyPostUtils:
         if not self.enabled:
             link = get_link_to_form("EasyPost", "EasyPost", _("EasyPost Settings"))
             frappe.throw(_("Please enable EasyPost Integration in {0}").format(link))
+            
+    def _sanitize_address_field(self, value: str | None, max_len: int = 35) -> str | None:
+        """Sanitize name/company fields for UPS, FedEx and EasyPost APIs.
+
+        UPS (and FedEx) are extremely strict:
+          • Parentheses, brackets, quotes, pipes etc. → "invalid company name"
+          • Max ~35 characters on the Name/CompanyName field
+        """
+        if not value:
+            return None
+
+        # 1. Remove entire parenthetical content (most common UPS breaker)
+        #    Example: "Procustom Group (Mid-Atlantic Computer)" → "Procustom Group"
+        value = re.sub(r'\s*\([^)]*\)', '', str(value))
+
+        # 2. Remove any remaining unsafe characters
+        value = re.sub(r'[^A-Za-z0-9\s\.\,\-\&\'\#\/]', '', value)
+
+        # 3. Normalize whitespace
+        value = re.sub(r'\s+', ' ', value).strip()
+
+        # 4. Clamp length (safe for all three carriers)
+        return value[:max_len] if value else None
 
     # ──────────────────────────────────────────────────────────────────────
     # Human‑friendly labels for the popup (does NOT affect the API)
@@ -176,7 +199,11 @@ class EasyPostUtils:
                 from_company = frappe.db.get_value("Company", ship_doc.pickup_company, "company_name") or "Shipping Dept"
 
             from_address = self._build_address_dict(ship_doc, pickup_contact, pickup_address, is_to_address=False)
-            from_address["name"] = from_contact_full if not from_company else None
+            
+            # Sanitize the overrides (from_address is built then overwritten)
+            from_contact_full = self._sanitize_address_field(from_contact_full)
+            from_company       = self._sanitize_address_field(from_company)
+            from_address["name"]    = from_contact_full if not from_company else None
             from_address["company"] = from_company if from_company else from_contact_full if from_contact_full else None
 
             if pickup_contact.email_id:
@@ -724,10 +751,8 @@ class EasyPostUtils:
     def get_tracking_data(self, ep_id: str):
         """Return tracking data for a single-parcel **or** multi-parcel shipment."""
         try:
-            if ep_id.startswith("order_"):                         # <-- NEW
-                r = requests.get(f"https://api.easypost.com/v2/orders/{ep_id}",
-                                  auth=(self.api_key, "")).json()
-                
+            if ep_id.startswith("order_"):
+                r = requests.get(f"https://api.easypost.com/v2/orders/{ep_id}", auth=(self.api_key, "")).json()
                 chosen_carrier = (r.get("selected_rate") or {}).get("carrier", "").upper()
                 msgs = [
                     m["message"]
@@ -925,14 +950,16 @@ class EasyPostUtils:
             customer_db_name = frappe.db.get_value("Customer", customer, "customer_name") or customer
             
             if customer_db_name != contact_name:
-                company_name = customer_db_name
+                company_name = self._sanitize_address_field(customer_db_name)
         
-        if company_name and not contact_full.strip():
+        contact_full = self._sanitize_address_field(contact_full)
+
+        if company_name and not contact_full:
             contact_full = "Receiving Dept"
         
         addr_dict = {
-            "name": contact_full if contact_full else None,
-            "company": company_name,
+            "name": self._sanitize_address_field(contact_full) if contact_full else None,
+            "company": self._sanitize_address_field(company_name) if company_name else None,
             "street1": address.address_line1,
             "street2": address.address_line2,
             "city": address.city,
