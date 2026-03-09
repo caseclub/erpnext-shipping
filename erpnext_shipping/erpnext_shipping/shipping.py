@@ -669,3 +669,74 @@ def get_shipment_zpl(shipment: str):
         "file_name": f.file_name,
         "zpl": zpl
     }
+
+@frappe.whitelist()
+def get_shipment_pdf_label(shipment: str):
+    """
+    NEW METHOD: Returns a human-readable PDF version of the shipping label.
+    - Reuses existing get_shipment_zpl() to find the attached .zpl
+    - Converts it to PDF via the free Labelary API (on first click only)
+    - Attaches the PDF to the Shipment (so it stays forever)
+    - Returns full URL so the browser can open it in a new tab
+    """
+    if not shipment:
+        frappe.throw(_("Shipment name is required"))
+
+    # Reuse existing logic to get the raw ZPL
+    zpl_response = get_shipment_zpl(shipment)
+    zpl = zpl_response.get("zpl")
+
+    if not zpl:
+        frappe.throw(_("No ZPL label found for this shipment. Please print the thermal label first."))
+
+    if isinstance(zpl, list):
+        zpl = "\n\n".join(zpl)
+
+    pdf_filename = f"label_{shipment}.pdf"
+
+    # Return existing PDF if it was already generated
+    existing = frappe.db.exists("File", {
+        "attached_to_doctype": "Shipment",
+        "attached_to_name": shipment,
+        "file_name": pdf_filename
+    })
+    if existing:
+        file_url = frappe.db.get_value("File", existing, "file_url")
+        return f"{frappe.utils.get_url()}{file_url}"
+
+    # Convert ZPL → PDF (standard 4×6 inch shipping label at 203 dpi)
+    try:
+        if isinstance(zpl, bytes):
+            zpl = zpl.decode("utf-8", errors="ignore")
+
+        # ────────────────────────────────────────────────────────────────
+        # Rotate 180° (because the labels were coming out upside-down)
+        # Official Labelary method: X-Rotation HTTP header (0/90/180/270)
+        # This affects ONLY the human-readable PDF — raw ZPL thermal printing
+        # is completely unchanged.
+        # ────────────────────────────────────────────────────────────────
+        response = requests.post(
+            "https://api.labelary.com/v1/printers/8dpmm/labels/4x6/0/",
+            data=zpl.encode("utf-8"),
+            headers={"Accept": "application/pdf", "X-Rotation": "180"},
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        pdf_doc = frappe.get_doc({
+            "doctype": "File",
+            "file_name": pdf_filename,
+            "content": response.content,
+            "folder": "Home/Attachments",
+            "attached_to_doctype": "Shipment",
+            "attached_to_name": shipment,
+            "is_private": 1,
+        })
+        pdf_doc.insert(ignore_permissions=True)
+
+        frappe.logger().info(f"✅ PDF label generated for shipment {shipment}")
+        return f"{frappe.utils.get_url()}{pdf_doc.file_url}"
+
+    except Exception as e:
+        frappe.log_error(title=f"ZPL → PDF failed for {shipment}", message=str(e))
+        frappe.throw(_("Failed to generate PDF label. Please check server logs or try again."))

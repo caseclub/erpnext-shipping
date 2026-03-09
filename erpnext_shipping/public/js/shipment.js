@@ -223,6 +223,15 @@ frappe.ui.form.on("Shipment", {
 					},
 					__("View")
 				);
+
+				// NEW: Human-readable PDF Label (separate from thermal print)
+				frm.add_custom_button(
+					__("PDF Label"),
+					function () {
+						return frm.events.view_pdf_label(frm);
+					},
+					__("View")
+				);
 			}
 		}
 
@@ -489,6 +498,24 @@ frappe.ui.form.on("Shipment", {
 					$('div[data-fieldname="shipment_information_section"]')[0].scrollIntoView();
 				}
 			},
+		});
+	},
+
+	view_pdf_label: function (frm) {
+		frappe.call({
+			method: "erpnext_shipping.erpnext_shipping.shipping.get_shipment_pdf_label",
+			args: { shipment: frm.doc.name },
+			freeze: true,
+			freeze_message: __("Generating PDF Label..."),
+			callback: function (r) {
+				if (r.message) {
+					window.open(r.message, "_blank");
+					frappe.show_alert({
+						message: __("PDF opened in new tab"),
+						indicator: "green"
+					});
+				}
+			}
 		});
 	},
 
