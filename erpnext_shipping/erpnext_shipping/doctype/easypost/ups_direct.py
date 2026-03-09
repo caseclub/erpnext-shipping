@@ -181,9 +181,15 @@ class UPSDirect:
                 # Fallback or error (customize as needed)
                 raise ValueError(f"Invalid state: {d['state']}. Must be 2-letter code or full name.")
 
+        # Support Address Line 2 (exactly as done in fedex_direct.py)
+        # UPS API accepts up to 3 entries in the AddressLine array
+        street_lines = [line for line in [d.get("street1", ""), d.get("street2", "")] if line]  # Filter None/empty
+        if not street_lines:
+            raise ValueError("At least one street line required.")
+
         return {
             "Address": {
-                "AddressLine": [d["street1"]],
+                "AddressLine": street_lines,
                 "City": d["city"],
                 "StateProvinceCode": state_code,
                 "PostalCode": d["zip"],
