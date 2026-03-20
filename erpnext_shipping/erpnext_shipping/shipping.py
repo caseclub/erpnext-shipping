@@ -630,6 +630,36 @@ def update_delivery_note(delivery_notes, shipment_info=None, tracking_info=None)
             dl_doc.db_set("tracking_status", tracking_info.get("tracking_status"))
             dl_doc.db_set("tracking_status_info", tracking_info.get("tracking_status_info"))
 
+        # === PROPAGATE TRACKING TO LINKED SALES INVOICE ===
+        # The Sales Invoice was auto-created from this Delivery Note (via create_sales_invoice_from_dn hook).
+        # We now also write the tracking number(s) into custom_tracking_numbers (comma-separated if multiple).
+        # This runs on both initial shipment creation AND later tracking updates.
+        if tracking_info and tracking_info.get("awb_number"):
+            tracking_num = str(tracking_info.get("awb_number")).strip()
+            if tracking_num:
+                # Find every Sales Invoice that references this Delivery Note
+                si_links = frappe.get_all(
+                    "Sales Invoice Item",
+                    filters={
+                        "delivery_note": delivery_note,
+                        "parenttype": "Sales Invoice"
+                    },
+                    fields=["parent"]
+                )
+
+                for link in si_links:
+                    si_name = link.parent
+                    if not si_name:
+                        continue
+
+                    current = (frappe.db.get_value("Sales Invoice", si_name, "custom_tracking_numbers") or "").strip()
+                    current_list = [x.strip() for x in current.split(",") if x.strip()]
+
+                    # Append only if not already present (handles multiple shipments per SI)
+                    if tracking_num not in current_list:
+                        new_value = f"{current}, {tracking_num}" if current else tracking_num
+                        frappe.db.set_value("Sales Invoice", si_name, "custom_tracking_numbers", new_value)
+
 @frappe.whitelist()
 def get_shipment_zpl(shipment: str):
     """
