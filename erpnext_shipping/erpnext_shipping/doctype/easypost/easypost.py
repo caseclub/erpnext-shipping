@@ -513,12 +513,19 @@ class EasyPostUtils:
                 except HTTPError as e:
                     try:
                         err_json = e.response.json()
-                        detail = (
-                            err_json.get("response", {})
-                                    .get("errors", [{}])[0]
-                                    .get("message")
-                            or err_json
-                        )
+                        # Special handling for UPS error 120412 (third-party billing not allowed)
+                        errors = err_json.get("response", {}).get("errors", [{}])
+                        first_error = errors[0] if errors else {}
+                        error_code = first_error.get("code")
+
+                        if error_code == "120412":
+                            # Use the exact user-friendly message requested.
+                            # No "UPS API Error:" prefix, and no error logging (already suppressed above).
+                            frappe.throw(
+                                _("UPS Account Issue: The provided UPS account is not configured for third-party billing. Please verify the account details.")
+                            )
+                        else:
+                            detail = first_error.get("message") or err_json
                     except Exception:
                         detail = e.response.text or str(e)
 

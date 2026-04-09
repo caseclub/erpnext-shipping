@@ -331,8 +331,26 @@ class UPSDirect:
         #print(f"Ship Payload: {body}", flush=True)
         r = requests.post(UPS_SHIP_URL, json=body, headers=self._headers())
         if r.status_code >= 400:
-            frappe.log_error(title=f"UPS {r.status_code} body", message=r.text[:2000] or "(empty)")
-            r.raise_for_status()
+            # ─────────────────────────────────────────────────────────────
+            # Special handling for UPS error 120412
+            # "The shipper cannot use the provided UPS account number as the payment method."
+            # This is a business/configuration issue (customer UPS account not authorized
+            # for third-party billing), NOT a system error. We suppress logging entirely
+            # for this case and let the outer handler show a clean user message.
+            # ─────────────────────────────────────────────────────────────
+            should_log = True
+            try:
+                err_json = r.json()
+                errors = err_json.get("response", {}).get("errors", [])
+                if errors and errors[0].get("code") == "120412":
+                    should_log = False
+            except Exception:
+                pass  # fall through to normal handling for non-JSON responses
+
+            if should_log:
+                frappe.log_error(title=f"UPS {r.status_code} body", message=r.text[:2000] or "(empty)")
+
+            # always raise so easypost.py can catch and show the friendly message
         
         #print("RAW UPS Ship RESPONSE:", json.dumps(r.json(), indent=2), flush=True)
         
