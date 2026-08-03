@@ -276,10 +276,18 @@ class EasyPostUtils:
                     frappe.throw(response_dict["error"]["message"], title=_("EasyPost"))
 
                 available_services: List[Dict[str, Any]] = []
+                order_shipments = response_dict.get("shipments", [])
+
                 for service in response_dict.get("rates", []):
+
+                    # For multi-parcel Orders, only expose a service if EVERY
+                    # parcel actually has that carrier/service available.
+                    if mps and not self._rate_in_all_shipments(service, order_shipments):
+                        continue
+
                     available_service = self.get_service_dict(
                         service,
-                        1 if mps else parcel_count,    # Order returns full price already
+                        1 if mps else parcel_count,
                         response_dict.get("id"),
                         is_order=mps
                     )
