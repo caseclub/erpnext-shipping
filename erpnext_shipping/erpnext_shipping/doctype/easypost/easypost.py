@@ -50,24 +50,53 @@ def build_parcel_list(rows):
     return parcels
 
 
+def get_third_party_billing(ship_doc):
+    """Validate explicit third-party billing before choosing a carrier.
+
+    This installation identifies UPS by its six-character account number and
+    FedEx by its nine-digit account number. Never guess a missing character.
+    """
+    if ship_doc.get("custom_ship_on_third_party") not in (1, "1", True, "Yes"):
+        return {"enabled": False, "carrier": None, "account": "", "postal_code": ""}
+
+    account = re.sub(r"[^A-Za-z0-9]", "", str(ship_doc.get("custom_third_party_account") or "")).upper()
+    postal = str(ship_doc.get("custom_third_party_postal") or "").strip()
+    if not account:
+        frappe.throw(_("Please enter the customer's carrier account number for third-party billing."))
+    if len(account) == 6:
+        carrier = "UPS"
+    elif len(account) == 9 and account.isdigit():
+        carrier = "FedEx"
+    else:
+        frappe.throw(_(
+            "Invalid third-party carrier account: found {0} characters. "
+            "UPS requires 6 letters/numbers; FedEx requires 9 digits. "
+            "Confirm the complete account number with the customer."
+        ).format(len(account)))
+    if not postal:
+        frappe.throw(_("Please enter the customer's carrier account billing ZIP / postal code."))
+    return {"enabled": True, "carrier": carrier, "account": account, "postal_code": postal}
+
+
 class EasyPost(Document):
     pass
 
 
 class EasyPostUtils:
-    def __init__(self):
+    def __init__(self, require_easypost=True):
         settings = frappe.get_single("EasyPost")
-        
-        if settings.use_test_environment:
-            self.api_key = settings.get_password("test_key")
-        else:
-            self.api_key = settings.get_password("production_key")  # Replace with your production key field name
+
+        # Direct UPS shares these address/label helpers but needs no EasyPost key.
+        self.api_key = None
+        if require_easypost:
+            key_field = "test_key" if settings.use_test_environment else "production_key"
+            self.api_key = settings.get_password(key_field)
         
         self.enabled = settings.enabled
         self.label_format = settings.label_format
         self.currency = frappe.db.get_single_value("Shipping Settings", "rates_currency")
 
-        if not self.enabled:
+        if require_easypost and not self.enabled:
             link = get_link_to_form("EasyPost", "EasyPost", _("EasyPost Settings"))
             frappe.throw(_("Please enable EasyPost Integration in {0}").format(link))
             
@@ -126,6 +155,68 @@ class EasyPostUtils:
         """Return nicer label if we have one."""
         return self._DISPLAY_MAP.get(raw, raw)
 
+    def _get_ups_third_party_services(self, billing, to_address, from_address, parcels):
+        """Rate exclusively with UPS; preserve useful carrier failures for the UI."""
+        try:
+            ups = UPSDirect()
+            response = ups.rate(
+                ups.ups_shipper_num, billing["account"], billing["postal_code"],
+                to_address, from_address, parcels,
+            )
+        except HTTPError as exc:
+            detail = str(exc)
+            if exc.response is not None:
+                try:
+                    errors = exc.response.json().get("response", {}).get("errors", [])
+                    if isinstance(errors, dict):
+                        errors = [errors]
+                    messages = [
+                        "{0}: {1}".format(err.get("code", "UPS"), err.get("message", "Request rejected"))
+                        for err in errors
+                    ]
+                    detail = "; ".join(messages) or detail
+                except (ValueError, TypeError, AttributeError):
+                    pass
+            frappe.throw(_("UPS rate request failed: {0}").format(detail))
+        except requests.RequestException:
+            frappe.throw(_("Could not connect to UPS to retrieve rates. Please try again."))
+
+        rated_shipments = response.get("RateResponse", {}).get("RatedShipment") or []
+        if isinstance(rated_shipments, dict):
+            rated_shipments = [rated_shipments]
+        if not rated_shipments:
+            frappe.throw(_(
+                "UPS returned no available services for this shipment. "
+                "Verify the addresses, parcel details, customer account, and billing ZIP."
+            ))
+
+        services = []
+        for rated in rated_shipments:
+            service = rated.get("Service") or {}
+            code = service.get("Code") or ""
+            negotiated = (rated.get("NegotiatedRateCharges") or {}).get("TotalCharge") or {}
+            published = rated.get("TotalCharges") or {}
+            charge = negotiated if negotiated.get("MonetaryValue") is not None else published
+            if not code or charge.get("MonetaryValue") is None:
+                frappe.throw(_("UPS returned an incomplete service or price. Please check the UPS response."))
+            services.append(frappe._dict({
+                "service_provider": "UPS",
+                "carrier": "UPS",
+                "carrier_code": "UPS",
+                "service_name": service.get("Description") or UPSDirect.SERVICE_MAP.get(code) or code,
+                "total_price": flt(charge["MonetaryValue"]),
+                "delivery_days": rated.get("GuaranteedDaysToDelivery"),
+                "service_id": code,
+                "shipment_id": None,
+                "ups_shipper_number": ups.ups_shipper_num,
+                "ups_account": billing["account"],
+                "ups_postal_code": billing["postal_code"],
+                "to_address": to_address,
+                "from_address": from_address,
+                "parcels": parcels,
+            }))
+        return services
+
     def _rate_in_all_shipments(self, rate_obj, shipments) -> bool:
         """True iff every shipment has a rate with the same carrier+service."""
         c = rate_obj["carrier"]
@@ -167,9 +258,6 @@ class EasyPostUtils:
     # MAIN RATE‑SHOPPING ENDPOINT
     # =========================================================================
     def get_available_services(self, delivery_address, delivery_contact, shipment_parcel: List[Dict[str, Any]], pickup_address, pickup_contact, value_of_goods, ) -> List[Dict[str, Any]]:
-            if not self.enabled or not self.api_key:
-                return []
-
             parcels = build_parcel_list(shipment_parcel)
             if not parcels:
                 frappe.throw(_("No parcel data supplied to EasyPost."))
@@ -209,29 +297,20 @@ class EasyPostUtils:
             if pickup_contact.email_id:
                 from_address["email"] = pickup_contact.email_id
 
-            bill_3p = (
-                ship_doc.get("custom_ship_on_third_party") in (1, "1", True, "Yes")
-                and bool(ship_doc.get("custom_third_party_account"))
-            )
-            acct_3p     = ship_doc.custom_third_party_account          # may be None
-            clean_acct  = re.sub(r"[^A-Za-z0-9]", "", acct_3p or "")
-            zip_3p   = ship_doc.custom_third_party_postal
-                    
-            if bill_3p and len(clean_acct) == 6:          
-                if not (acct_3p and zip_3p):
-                    frappe.throw(_("Please fill Customer Account # and Billing ZIP for third‑party billing."))
+            billing = get_third_party_billing(ship_doc)
+            bill_3p = billing["enabled"]
+            clean_acct = billing["account"]
+            zip_3p = billing["postal_code"]
 
-                if len(clean_acct) == 0:
-                    frappe.throw(_("Account number must contain at least one letter/number."))
+            # This branch is outside the EasyPost try/except and returns before
+            # constructing or submitting any EasyPost Shipment/Order payload.
+            if billing["carrier"] == "UPS":
+                return self._get_ups_third_party_services(
+                    billing, to_address, from_address, parcels
+                )
 
-                third_party_block = {
-                    "payment": {
-                        "type":        "THIRD_PARTY",
-                        "account":     clean_acct,
-                        "postal_code": zip_3p.strip(),
-                        "country":     "US",
-                    }
-                }
+            if not self.enabled or not self.api_key:
+                return []
 
             # ------------------------------------------------------------------
             # Compose EasyPost shipment payload
@@ -361,58 +440,7 @@ class EasyPostUtils:
                 # UPSDirect integration for third‑party UPS billing
                 # ─────────────────────────────────────────────────────────────
                 if bill_3p:
-                    if len(clean_acct) == 6:  # UPS (6-digit)
-                        ups = UPSDirect()
-                        try:
-                            ups_rates = ups.rate(
-                                ups.ups_shipper_num,
-                                clean_acct,
-                                zip_3p.strip(),
-                                shipment["to_address"],
-                                shipment["from_address"],
-                                parcels
-                            )
-
-                            rated_shipments = ups_rates.get("RateResponse", {}).get("RatedShipment", [])
-                            if isinstance(rated_shipments, dict):
-                                rated_shipments = [rated_shipments]
-
-                            for rated in rated_shipments:
-                                svc = rated["Service"]
-                                code = svc.get("Code") or ""
-                                nice_name = (
-                                    svc.get("Description")
-                                    or UPSDirect.SERVICE_MAP.get(code)
-                                    or code
-                                )
-
-                                available_services.append(
-                                    frappe._dict({
-                                        "service_provider": "UPS",
-                                        "carrier": "UPS",
-                                        "service_name": nice_name,
-                                        "total_price": flt(rated["TotalCharges"]["MonetaryValue"]),
-                                        "delivery_days": rated.get("GuaranteedDaysToDelivery"),
-                                        "service_id": code,
-                                        "shipment_id": None,
-                                        "ups_shipper_number": ups.ups_shipper_num,
-                                        "ups_account":        clean_acct,
-                                        "ups_postal_code":    zip_3p.strip(),
-                                        "to_address":         shipment["to_address"],
-                                        "from_address":       shipment["from_address"],
-                                        "parcels":             parcels,
-                                    })
-                                )
-                        except HTTPError as e:
-                            print("UPS HTTPError:", getattr(e.response, "text", str(e)), flush=True)
-                            raise  # propagate the HTTP 4xx/5xx back to Frappe
-                        except Exception as e:
-                            frappe.throw(_(f"Unexpected error creating UPS label: {str(e)}"))
-
-                        # Remove EasyPost's UPS rates to avoid duplicates (prefer 3p direct)
-                        available_services = [s for s in available_services if not (s.get("service_provider") == "EasyPost" and s.get("carrier") == "UPS")]
-
-                    elif len(clean_acct) == 9:  # FedEx (9-digit)
+                    if len(clean_acct) == 9:  # FedEx (9-digit)
                         fedex = FedExDirect()
                         try:
                             fedex_rates = fedex.rate(
@@ -467,12 +495,8 @@ class EasyPostUtils:
                         except Exception as e:
                             frappe.throw(_(f"Unexpected error fetching FedEx rates: {str(e)}"))
 
-                # ---- Filter by carrier for 3‑P billing (original logic, kept for UPS but now redundant with above)
                 if bill_3p:
-                    if len(clean_acct) == 6:      # UPS (6‑digit acct)
-                        available_services = [s for s in available_services if s.get("service_provider") == "UPS"]
-                    elif len(clean_acct) == 9:    # FedEx (9-digit)
-                        available_services = [s for s in available_services if s.get("service_provider") == "FedEx"]
+                    available_services = [s for s in available_services if s.get("service_provider") == "FedEx"]
 
                 return available_services
 
@@ -483,7 +507,8 @@ class EasyPostUtils:
     # PURCHASE LABELS (EasyPost or UPSDirect)
     # =========================================================================
     def create_shipment(self, service_info):
-        if not self.enabled or not self.api_key:
+        direct_ups = (service_info.get("service_provider") or "").upper() == "UPS"
+        if not direct_ups and (not self.enabled or not self.api_key):
             return []
 
         try:
@@ -518,25 +543,24 @@ class EasyPostUtils:
                             "label_zpl_url": resp["shipping_label"],
                         },
                     }
-                except HTTPError as e:
-                    try:
-                        err_json = e.response.json()
-                        # Special handling for UPS error 120412 (third-party billing not allowed)
-                        errors = err_json.get("response", {}).get("errors", [{}])
-                        first_error = errors[0] if errors else {}
-                        error_code = first_error.get("code")
-
-                        if error_code == "120412":
-                            # Use the exact user-friendly message requested.
-                            # No "UPS API Error:" prefix, and no error logging (already suppressed above).
-                            frappe.throw(
-                                _("UPS Account Issue: The provided UPS account is not configured for third-party billing. Please verify the account details.")
-                            )
-                        else:
-                            detail = first_error.get("message") or err_json
-                    except Exception:
-                        detail = e.response.text or str(e)
-
+                except HTTPError as exc:
+                    detail = str(exc)
+                    error_code = None
+                    if exc.response is not None:
+                        try:
+                            errors = exc.response.json().get("response", {}).get("errors", [])
+                            if isinstance(errors, dict):
+                                errors = [errors]
+                            if errors:
+                                error_code = str(errors[0].get("code") or "")
+                                detail = errors[0].get("message") or detail
+                        except (ValueError, TypeError, AttributeError):
+                            pass
+                    if error_code == "120412":
+                        frappe.throw(_(
+                            "UPS Account Issue: UPS rejected this account as the payment method. "
+                            "Verify the customer account, billing ZIP, and third-party billing authorization."
+                        ))
                     frappe.throw(_("UPS API Error: {0}").format(detail))
 
             # ───────────────────────────
@@ -698,6 +722,8 @@ class EasyPostUtils:
                     "postage_label": postage_stub,
                 }
         except Exception:
+            if direct_ups:
+                raise
             show_error_alert("creating EasyPost Shipment")
 
     def get_label(self, shipment_id):

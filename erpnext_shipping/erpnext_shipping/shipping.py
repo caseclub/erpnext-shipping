@@ -22,7 +22,9 @@ from erpnext_shipping.erpnext_shipping.utils import (
     normalize_contact,
 )
 
-from erpnext_shipping.erpnext_shipping.doctype.easypost.easypost import EASYPOST_PROVIDER, EasyPostUtils
+from erpnext_shipping.erpnext_shipping.doctype.easypost.easypost import (
+    EASYPOST_PROVIDER, EasyPostUtils, get_third_party_billing,
+)
 
 from frappe.utils.file_manager import get_files_path
 
@@ -48,7 +50,13 @@ def fetch_shipping_rates(
     delivery_address = get_address(delivery_address_name)
     parcels = json.loads(parcels)
 
-    if letmeship_enabled:
+    # Resolve the explicit billing choice before contacting ANY rate provider.
+    ups_third_party = False
+    if parcels and parcels[0].get("parent"):
+        shipment_doc = frappe.get_doc("Shipment", parcels[0]["parent"])
+        ups_third_party = get_third_party_billing(shipment_doc)["carrier"] == "UPS"
+
+    if letmeship_enabled and not ups_third_party:
         pickup_contact = None
         delivery_contact = None
         if pickup_from_type != "Company":
@@ -85,7 +93,7 @@ def fetch_shipping_rates(
         letmeship_prices = match_parcel_service_type_carrier(letmeship_prices, "carrier", "service_name")
         shipment_prices += letmeship_prices
 
-    if sendcloud_enabled and pickup_from_type == "Company":
+    if sendcloud_enabled and pickup_from_type == "Company" and not ups_third_party:
         sendcloud = SendCloudUtils()
         sendcloud_prices = (
             sendcloud.get_available_services(delivery_address=delivery_address, parcels=parcels) or []
@@ -93,7 +101,7 @@ def fetch_shipping_rates(
         sendcloud_prices = match_parcel_service_type_carrier(sendcloud_prices, "carrier", "service_name")
         shipment_prices += sendcloud_prices
 
-    if easypost_enabled:
+    if easypost_enabled or ups_third_party:
         pickup_contact = None
         delivery_contact = None
         if pickup_from_type != "Company":
@@ -112,7 +120,7 @@ def fetch_shipping_rates(
             if delivery_contact:
                 delivery_contact["email_id"] = delivery_contact.pop("email", None)
 
-        easypost = EasyPostUtils()
+        easypost = EasyPostUtils(require_easypost=not ups_third_party)
         easypost_prices = (
             easypost.get_available_services(
                 delivery_address=delivery_address,
@@ -124,8 +132,8 @@ def fetch_shipping_rates(
             )
             or []
         )
-#eric added the following line but does not seem to make a difference
-        easypost_prices = match_parcel_service_type_carrier(easypost_prices, "carrier", "service_name")
+        if not ups_third_party:
+            easypost_prices = match_parcel_service_type_carrier(easypost_prices, "carrier", "service_name")
         shipment_prices += easypost_prices
 
     shipment_prices = sorted(shipment_prices, key=lambda k: k["total_price"])
@@ -278,7 +286,7 @@ def create_shipment(
         if isinstance(service_info, dict):
             service_info = frappe._dict(service_info)
 
-        easypost = EasyPostUtils()
+        easypost = EasyPostUtils(require_easypost=service_info.get("service_provider") != "UPS")
         shipment_info = easypost.create_shipment(service_info=service_info)
 
     if service_info.get("service_provider") == "FedEx":

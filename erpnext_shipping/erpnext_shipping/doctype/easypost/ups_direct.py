@@ -8,6 +8,8 @@ from requests.exceptions import HTTPError
 import base64
 import uuid
 import os
+import copy
+import time
 from frappe.utils.file_manager import get_files_path
 from frappe import _
 
@@ -77,7 +79,8 @@ class UPSDirect:
     def __init__(self):
         # pull creds now (runtime), not at import time
         self.ups_client_id, self.ups_client_secret, self.ups_shipper_num = _get_ups_creds()
-        self.easypost_key = _get_easypost_key()
+        # EasyPost is used only by the existing tracking workaround, not rates/labels.
+        self.easypost_key = None
         self.token = self._oauth()
         self._base_url = UPS_BASE_URL
     
@@ -162,7 +165,8 @@ class UPSDirect:
         r = requests.post(
             UPS_OAUTH_URL,
             headers=headers,
-            data=payload
+            data=payload,
+            timeout=30,
         )
         r.raise_for_status()
         return r.json()["access_token"]
@@ -235,18 +239,153 @@ class UPSDirect:
         }
 
 
+    def _payment_charge(self, shipper_num, bill_acct, bill_zip):
+        """Use the same payer details for a rate request and a label purchase."""
+        shipper_num = re.sub(r"[^A-Za-z0-9]", "", str(shipper_num or "")).upper()
+        account = re.sub(r"[^A-Za-z0-9]", "", str(bill_acct or "")).upper()
+        if len(shipper_num) != 6:
+            frappe.throw(_("The configured UPS shipper account must contain exactly 6 letters/numbers."))
+        if account and len(account) != 6:
+            frappe.throw(_("The customer's UPS account must contain exactly 6 letters/numbers."))
+        if account and account != shipper_num:
+            postal = str(bill_zip or "").strip()
+            if not postal:
+                frappe.throw(_("Please enter the customer's UPS account billing ZIP / postal code."))
+            return {
+                "Type": "01",
+                "BillThirdParty": {
+                    "AccountNumber": account,
+                    "Address": {"PostalCode": postal, "CountryCode": "US"},
+                },
+            }
+        return {"Type": "01", "BillShipper": {"AccountNumber": shipper_num}}
+
+    @staticmethod
+    def _rate_errors(result):
+        """Normalize UPS business errors, including failures returned with HTTP 200."""
+        if not isinstance(result, dict):
+            return []
+        envelope = result.get("response") or {}
+        errors = envelope.get("errors") if isinstance(envelope, dict) else None
+        if isinstance(errors, dict):
+            errors = [errors]
+        if errors:
+            if not isinstance(errors, list):
+                errors = [errors]
+            return [err if isinstance(err, dict) else {"message": str(err)} for err in errors]
+
+        rate_response = result.get("RateResponse") or {}
+        if not isinstance(rate_response, dict):
+            return []
+        response = rate_response.get("Response") or {}
+        if not isinstance(response, dict):
+            return []
+        status = response.get("ResponseStatus") or {}
+        if isinstance(status, dict) and str(status.get("Code")) == "0":
+            return [{
+                "code": status.get("Code"),
+                "message": status.get("Description") or "UPS reported a failed rate request.",
+            }]
+        return []
+
+    @classmethod
+    def _is_negotiated_rate_error(cls, error):
+        """Only a pricing-specific rejection may trigger a published-rate retry.
+
+        Generic account, payment, OAuth, address and package failures must remain
+        errors. A mixed response containing such a failure is not eligible either.
+        """
+        response = getattr(error, "response", None)
+        if response is None or response.status_code not in (200, 400, 403, 422):
+            return False
+        try:
+            errors = cls._rate_errors(response.json())
+        except (ValueError, TypeError, AttributeError):
+            return False
+        if not errors:
+            return False
+        pricing_terms = re.compile(
+            r"\b(?:negotiat\w*|account[\s-]*based[\s-]*rates?|"
+            r"contract[\s-]*rates?|TPFCNegotiatedRatesIndicator)\b", re.IGNORECASE
+        )
+        return all(
+            pricing_terms.search(str(err.get("message") or err.get("Description") or ""))
+            for err in errors
+        )
+
+    def _request_rates(self, body):
+        """Retry one temporary quote failure; never use this helper to buy labels."""
+        for attempt in range(2):
+            try:
+                response = requests.post(
+                    UPS_RATE_URL, json=body, headers=self._headers(), timeout=(10, 30)
+                )
+            except (requests.Timeout, requests.ConnectionError):
+                if attempt:
+                    raise
+                time.sleep(0.5)
+                continue
+
+            if response.status_code in (429, 500, 502, 503, 504) and not attempt:
+                # Keep the retry bounded. Do not immediately retry if UPS asks us
+                # to wait longer than this interactive quote can reasonably wait.
+                retry_after = response.headers.get("Retry-After", "")
+                try:
+                    delay = float(retry_after) if retry_after else 0.5
+                except (TypeError, ValueError):
+                    delay = None  # e.g. an HTTP-date; let the user retry later.
+                if delay is not None and 0 <= delay <= 2:
+                    time.sleep(delay)
+                    continue
+
+            try:
+                result = response.json()
+            except ValueError as exc:
+                raise HTTPError(
+                    "UPS rate request returned an unreadable response (HTTP {0}).".format(response.status_code),
+                    response=response,
+                ) from exc
+            if not isinstance(result, dict):
+                raise HTTPError("UPS rate request returned an invalid response.", response=response)
+            errors = self._rate_errors(result)
+            if response.status_code >= 400 or errors:
+                detail = "; ".join(
+                    "{0}: {1}".format(
+                        err.get("code", err.get("Code", "UPS")),
+                        err.get("message") or err.get("Description") or "Request rejected",
+                    ) for err in errors
+                )
+                raise HTTPError(
+                    "UPS rate request failed (HTTP {0}): {1}".format(
+                        response.status_code, detail or "UPS rejected the request."
+                    ),
+                    response=response,
+                )
+            if not isinstance(result.get("RateResponse"), dict):
+                raise HTTPError("UPS response is missing rate information.", response=response)
+            return result
+
     # ---------- rate ----------
     def rate(self, shipper_num, bill_acct, bill_zip, to_addr, from_addr, parcels):
+        shipper_num = re.sub(r"[^A-Za-z0-9]", "", str(shipper_num or "")).upper()
+        payer = self._payment_charge(shipper_num, bill_acct, bill_zip)
+        packages = [self._package(p) for p in parcels]
+        for package in packages:
+            package.pop("Packaging", None)  # Rating uses PackagingType; Shipping uses Packaging.
+        rating_options = {"NegotiatedRatesIndicator": "Y"}
+        if "BillThirdParty" in payer:
+            rating_options["TPFCNegotiatedRatesIndicator"] = "Y"
         body = {
             "RateRequest": {
                  "Request": {
-                     "SubVersion": "2205"
+                     "SubVersion": "2205",
+                     "RequestOption": "Shop",
                  },
                 "PickupType": {                  # ← Pascal-case
                     "Code": "03"                 # 03 = Customer Counter
                 },
                 "CustomerClassification": {
-                    "Code": "04"                 # 04 = Occasional Shipper
+                    "Code": "00"                 # Rates associated with the shipper account.
                 },
                 "Shipment": {
                     "Shipper": {
@@ -256,29 +395,35 @@ class UPSDirect:
                     },
                     "ShipFrom": self._address(from_addr),
                     "ShipTo":   self._address(to_addr),
-                    "Package": [self._package(p) for p in parcels]
+                    "PaymentDetails": {"ShipmentCharge": [payer]},
+                    "ShipmentRatingOptions": rating_options,
+                    "Package": packages
                 }
             }
         }
 
-        r = requests.post(UPS_RATE_URL, json=body, headers=self._headers(), timeout=30)
-
-        if r.status_code >= 400:
-            body_text = r.text.strip() or "(empty)"
-            frappe.log_error(f"UPS {r.status_code} response", body_text)
-            # try to pull JSON errors, but fall back to raw text
+        try:
             try:
-                err = r.json()
-            except ValueError:
-                err = body_text
-            raise HTTPError(f"UPS error {r.status_code}: {err}", response=r)
+                return self._request_rates(body)
+            except HTTPError as exc:
+                if not self._is_negotiated_rate_error(exc):
+                    raise
 
-        
-        # Print the raw ups rate response
-        #print("RAW UPS RATE RESPONSE:", json.dumps(r.json(), indent=2), flush=True)
-
-        r.raise_for_status()
-        return r.json()
+                # One pricing fallback, not a different payer. Keep BillThirdParty,
+                # its account/ZIP, the shipper, addresses and all boxes unchanged.
+                published_body = copy.deepcopy(body)
+                published_body["RateRequest"]["Shipment"].pop("ShipmentRatingOptions", None)
+                return self._request_rates(published_body)
+        except HTTPError as exc:
+            # A recovered negotiated-pricing rejection is not an operational error.
+            # Log only the final rejection; retain its response for the caller/UI.
+            response = getattr(exc, "response", None)
+            if response is not None:
+                frappe.log_error(
+                    title="UPS rate request failed (HTTP {0})".format(response.status_code),
+                    message=response.text.strip() or str(exc),
+                )
+            raise
 
 
 
@@ -286,26 +431,8 @@ class UPSDirect:
     def ship(self, shipper_num, bill_acct, bill_zip, to_addr, from_addr, parcels, service_code):
         today = datetime.date.today().strftime("%Y%m%d")      
         
-        if bill_acct and bill_acct.strip() != shipper_num:
-            # third-party billing
-            payer_block = {
-                "Type": "01",                 # 01 = transportation charges
-                "BillThirdParty": {
-                    "AccountNumber": bill_acct.strip(),
-                    "Address": {
-                        "PostalCode": bill_zip,
-                        "CountryCode": "US"
-                    }
-                }
-            }
-        else:
-            # shipper pays
-            payer_block = {
-                "Type": "01",
-                "BillShipper": {
-                    "AccountNumber": shipper_num
-                }
-            }
+        shipper_num = re.sub(r"[^A-Za-z0-9]", "", str(shipper_num or "")).upper()
+        payer_block = self._payment_charge(shipper_num, bill_acct, bill_zip)
 
         body = {
             "ShipmentRequest": {
@@ -329,7 +456,7 @@ class UPSDirect:
             }
         }
         #print(f"Ship Payload: {body}", flush=True)
-        r = requests.post(UPS_SHIP_URL, json=body, headers=self._headers())
+        r = requests.post(UPS_SHIP_URL, json=body, headers=self._headers(), timeout=60)
         if r.status_code >= 400:
             # ─────────────────────────────────────────────────────────────
             # Special handling for UPS error 120412
@@ -428,6 +555,8 @@ class UPSDirect:
         """
         Fetch tracking data for a UPS shipment using EasyPost's tracker API (workaround for 3p auth issues).
         """
+        if not self.easypost_key:
+            self.easypost_key = _get_easypost_key()
         if not self.easypost_key:
             raise frappe.ValidationError("EasyPost API key missing in settings (required for UPS tracking).")
 
